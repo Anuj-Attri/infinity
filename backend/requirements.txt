@@ -41,6 +41,10 @@ numpy>=1.24
 # Market data — the manual portfolio tracker
 yfinance>=0.2.40
 
+# Error reporting. Inert until SENTRY_DSN is set; scrubbing in app/observability.py
+# is configured and tested first, which MARK4.md makes a gate rather than a habit.
+sentry-sdk[fastapi]>=2.19
+
 # Accurate token accounting for the context budget. context_budget.py falls
 # back to chars//4 without it, which silently mis-budgets long contexts.
 tiktoken>=0.8
@@ -50,7 +54,7 @@ tiktoken>=0.8
 # asyncpg==0.30.0
 # pgvector==0.3.6
 # PyJWT==2.10.1
-# sentry-sdk[fastapi]==2.19.2
+
 
 # Dev
 pytest==8.3.4

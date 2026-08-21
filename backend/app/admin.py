@@ -171,6 +171,20 @@ def _subsystems() -> list[Subsystem]:
         unblock="M5 for search; M4 moves storage to Postgres with owner columns.",
     ))
 
+    # --- error reporting ----------------------------------------------------
+    dsn = _is_set("SENTRY_DSN")
+    out.append(Subsystem(
+        id="sentry", name="Error reporting",
+        status="ok" if dsn else "off",
+        detail=("Sentry is on. Scrubbing removes credentials, message bodies, "
+                "document text, emails and the hostname before any event leaves."
+                if dsn else
+                "No DSN set, so nothing is reported. Scrubbing is already written "
+                "and tested — MARK4.md makes that the order, because the first "
+                "event is the one you cannot un-send."),
+        unblock=None if dsn else "Set SENTRY_DSN. Nothing else is required.",
+    ))
+
     # --- persistence --------------------------------------------------------
     from .paths import data_dir, is_ephemeral
     eph = is_ephemeral()

@@ -103,6 +103,7 @@ from .browse  import router as browse_router, set_ingest as browse_set_ingest  #
 from .mcp_api import router as mcp_router  # noqa: E402
 from .admin import router as admin_router  # noqa: E402
 from . import ratelimit  # noqa: E402
+from . import observability  # noqa: E402
 from . import mcp_client  # noqa: E402
 from .chat_providers     import router as chat_providers_router      # noqa: E402
 from .dispatch_providers import router as dispatch_providers_router  # noqa: E402
@@ -292,6 +293,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+# Scrubbing is configured and tested before this can do anything; a missing
+# DSN is the normal state, not an error.
+observability.init()
 
 _BOOTED_AT = time.time()
 
