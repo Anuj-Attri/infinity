@@ -41,6 +41,7 @@ import ChainTile from "./tiles/ChainTile";
 import PlanTile from "./tiles/PlanTile";
 import VaultTile from "./tiles/VaultTile";
 import SkillsTile from "./tiles/SkillsTile";
+import ConsoleTile from "./tiles/ConsoleTile";
 // (Browser is now multi-instance and self-contained; no BrowserContext usage here.)
 import { useCanvas } from "../state/CanvasContext";
 import { useTiles, type SpawnPoint, multiInstanceKind, TileIdContext } from "../state/TilesContext";
@@ -91,11 +92,13 @@ const TILE_DEFS: TileDef[] = [
     defaultRect: { x: 120, y: 120, w: 720, h: 560, z:11 }, minW: 420, minH: 340 },
   { i: "skills", component: () => <SkillsTile />,
     defaultRect: { x: 200, y: 160, w: 460, h: 480, z:11 }, minW: 320, minH: 280 },
+  { i: "console", component: () => <ConsoleTile />,
+    defaultRect: { x: 240, y: 140, w: 560, h: 620, z:12 }, minW: 380, minH: 320 },
 ];
 
 const PERMANENT_IDS = new Set(["chat", "clock", "stocks", "news", "todo", "notes"]);
 // Singleton-but-opt-in: one instance, must be spawned, focus-on-reopen.
-const EPHEMERAL_OPENABLE = new Set(["docs", "summary", "research", "chain", "vault", "skills"]);
+const EPHEMERAL_OPENABLE = new Set(["docs", "summary", "research", "chain", "vault", "skills", "console"]);
 
 // Multi-instance kinds (Chrome-tabs style): every + menu pick is a NEW
 // tile with a unique id and its own state. Keyed by KIND ("terminal",

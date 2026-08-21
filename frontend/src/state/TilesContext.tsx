@@ -73,6 +73,7 @@ export const TILE_REGISTRY: TileInfo[] = [
   { id: "image",    label: "Image",       description: "Generated images" },
   { id: "audio",    label: "Audio",       description: "Generated music" },
   { id: "weather",  label: "Weather",     description: "Local forecast" },
+  { id: "console",  label: "Console",      description: "What is working, and what is not" },
   { id: "usage",    label: "Usage",       description: "API usage" },
 ];
 

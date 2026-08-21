@@ -30,7 +30,7 @@ const TILES = [
   ["vault", "Vault"], ["skills", "Skills"], ["summary", "Summary"],
   ["research", "Research"], ["chain", "Chain"], ["browser", "Browser"],
   ["code", "Code"], ["terminal", "Terminal"], ["weather", "Weather"],
-  ["usage", "Usage"],
+  ["usage", "Usage"], ["console", "Console"],
 ];
 
 const results = [];
@@ -45,9 +45,13 @@ page.on("console", (m) => {
 });
 page.on("pageerror", (e) => pageErrors.push("PAGEERROR " + String(e).replace(/\s+/g, " ").slice(0, 220)));
 page.on("requestfailed", (r) => {
-  // favicon and analytics noise are not app failures; anything else is.
   const u = r.url();
-  if (!/favicon|\.map$/.test(u)) pageErrors.push(`REQFAIL ${u.slice(0, 110)} ${r.failure()?.errorText}`);
+  const why = r.failure()?.errorText || "";
+  // ERR_ABORTED is a CANCELLED request, not a failed one — React StrictMode
+  // double-invokes effects in dev, so the first fetch of a pair is aborted by
+  // design. Flagging it trains the reader to ignore this whole channel.
+  if (/favicon|\.map$/.test(u) || /ERR_ABORTED/.test(why)) return;
+  pageErrors.push(`REQFAIL ${u.slice(0, 110)} ${why}`);
 });
 
 const die = async (why) => {

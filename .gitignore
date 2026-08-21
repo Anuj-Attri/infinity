@@ -44,3 +44,6 @@ Thumbs.db
 # one workspace, and it should never enter history.
 AGENTS.md
 NOTES.local.md
+
+# e2e artifacts — screenshots and reports are per-run, not source
+frontend/e2e/shots/

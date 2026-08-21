@@ -1501,6 +1501,25 @@ export type WeatherData = {
   fetched_at: string;
 };
 
+// ── Operator diagnostics ────────────────────────────────────────────────────
+export type SubsystemStatus = "ok" | "degraded" | "blocked" | "off";
+export type Diagnostics = {
+  service: { name: string; python: string; platform: string; containerised: boolean };
+  config: { name: string; set: boolean; enables: string; required: boolean }[];
+  subsystems: { id: string; name: string; status: SubsystemStatus; detail: string; unblock: string | null }[];
+  connectors: {
+    chat_providers: Record<string, unknown>;
+    mcp?: { enabled?: boolean; error?: string; servers?: { id: string; name: string; transport: string; trusted: boolean; builtin: boolean; tools: number }[] };
+  };
+  auth: { password_set: boolean; store_backend: string; devices: number };
+};
+
+export async function getDiagnostics(): Promise<Diagnostics> {
+  const r = await apiFetch(`${BASE}/admin/diagnostics`);
+  if (!r.ok) throw new Error(`diagnostics ${r.status}`);
+  return r.json();
+}
+
 export async function getWeather(city: string, signal?: AbortSignal): Promise<WeatherData> {
   // The signal matters: without it a slow response for a previous city can land
   // after a newer one and overwrite it.

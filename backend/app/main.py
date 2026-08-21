@@ -101,6 +101,7 @@ from .files import router as files_router      # noqa: E402
 from .fs      import router as fs_router       # noqa: E402
 from .browse  import router as browse_router, set_ingest as browse_set_ingest  # noqa: E402
 from .mcp_api import router as mcp_router  # noqa: E402
+from .admin import router as admin_router  # noqa: E402
 from . import mcp_client  # noqa: E402
 from .chat_providers     import router as chat_providers_router      # noqa: E402
 from .dispatch_providers import router as dispatch_providers_router  # noqa: E402
@@ -341,6 +342,8 @@ browse_set_ingest(_browse_to_vault)
 # become callable by Nova via the mcp_call action. Own module + key store; no
 # chat/dispatch cross-import (Rule 7). Fail-closed.
 app.include_router(mcp_router)
+# Operator diagnostics. Behind require_auth like everything not in _AUTH_EXEMPT.
+app.include_router(admin_router)
 
 
 # /notify — earned-and-rare notification bus (the gate is the feature).
