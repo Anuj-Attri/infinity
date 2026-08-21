@@ -118,7 +118,7 @@ export default function VaultTile() {
                   onClick={() => { setBusy("reindexing"); vaultReindex().finally(() => { setBusy(null); setGraph(null); void refresh(); }); }}>
             <TabIcon name="refresh" /></button>
           <input ref={fileRef} type="file" multiple hidden
-                 accept=".md,.txt,.pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg,.webp,.wav,.mp3,.m4a,.ogg,.webm,.flac"
+                 accept=".md,.txt,.pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg,.webp"
                  onChange={(e) => { if (e.target.files?.length) void ingestFiles(e.target.files); e.target.value = ""; }} />
         </div>
 

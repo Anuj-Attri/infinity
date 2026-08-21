@@ -17,6 +17,7 @@ import { useTool } from "../state/ToolContext";
 import { useCanvas } from "../state/CanvasContext";
 import { useTiles, TILE_REGISTRY } from "../state/TilesContext";
 import { useFiles } from "../state/FilesContext";
+import { useDeviceMode } from "../state/device";
 import {
   useDrawing, PEN_PRESETS, PEN_WIDTHS,
 } from "../state/DrawingContext";
@@ -38,7 +39,12 @@ export default function TopToolbar() {
   // dead tile in the list — it just isn't there. On the PHONE shell we also
   // drop kinds that need a wide viewport (browser/code/terminal)
   // that don't render in the mobile feed/focus — detect has its own camera FAB.
-  const onPhone = typeof document !== "undefined" && !!document.querySelector(".mobile-shell.is-phone");
+  // Was querySelector(".mobile-shell.is-phone"), which could never match:
+  // MobileShell is not ported yet, so the selector was permanently false and
+  // MOBILE_HIDDEN_KINDS below was unreachable. useDeviceMode() is the real
+  // signal and does not depend on a component existing.
+  const { isMobile, isTablet } = useDeviceMode();
+  const onPhone = isMobile && !isTablet;   // a tablet has room for these
   const availableTiles = TILE_REGISTRY.filter((t) => {
     if (onPhone && MOBILE_HIDDEN_KINDS.has(t.id)) return false;
     return true;

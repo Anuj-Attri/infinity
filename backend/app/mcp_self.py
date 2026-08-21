@@ -21,11 +21,16 @@ from typing import Any
 
 # Panels the client knows how to surface. Mobile opens them as inline
 # sheets/deep-dives (no tile canvas there); desktop spawns the real tile.
+# Every name here is injected into the system prompt and into this tool's
+# inputSchema enum, so the model is told each one is a thing it can open. A name
+# with no tile behind it is a promise the app cannot keep: the user approves a
+# consent prompt, nothing appears, and the model reports success anyway.
+# "blueprint" was exactly that — BlueprintTile is on Mark 4's dropped list, so
+# spawn() fell through and the caller still got "blueprint panel opened".
 PANELS = ["usage", "status", "model", "weather", "portfolio", "news",
           "tasks", "notes", "vault", "chat",
-          # First-class on mobile too (v0.1.11): indexed-docs list, the
-          # blueprint.am hardware-design surface, and the RAG-brain graph.
-          "docs", "blueprint", "brain"]
+          # Indexed-docs list and the RAG-brain graph.
+          "docs", "brain"]
 
 
 def workflow_commands() -> list[str]:

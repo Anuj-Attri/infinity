@@ -761,20 +761,19 @@ async def vault_ingest_file(file: UploadFile = File(...)) -> dict:
                 "captioned": bool(caption)}
 
     if ext in _AUD_EXTS:
-        from .voice import transcribe_bytes
-        out = await transcribe_bytes(blob)  # raises honest 503 if STT absent
-        if not out["text"]:
-            raise HTTPException(status_code=422, detail="no speech detected")
-        node = await write_node(
-            title=f"{stem} (transcript)",
-            body=out["text"],
-            source_kind="audio", source_ref=name[:200],
+        # Voice/Whisper was deliberately dropped in Mark 4 (no local model
+        # lane), but this branch survived the cut and still imported it. The
+        # import raised ModuleNotFoundError, which the app-level handler turned
+        # into an opaque 500 — while the Vault tile's file picker went on
+        # advertising these extensions. Refuse clearly instead of crashing.
+        raise HTTPException(
+            status_code=415,
+            detail="audio transcription is not available in this build",
         )
-        return {"ok": True, "node": node, "kind": "audio"}
 
     raise HTTPException(status_code=415,
                         detail=f"unsupported type {ext or '(none)'} — "
-                               "md/txt/pdf/docx/xlsx/pptx/image/audio")
+                               "md/txt/pdf/docx/xlsx/pptx/image")
 
 
 async def _caption_image(blob: bytes, ext: str) -> str:

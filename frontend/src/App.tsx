@@ -935,9 +935,18 @@ function AppInner() {
         try { window.dispatchEvent(new CustomEvent("infinity:showmodel")); } catch { /* ignore */ }
         return "model picker opened";
       }
-      // "docs" opens the REAL indexed-docs tile; "brain" now also routes
-      // there (the 3D vision tile was retired).
-      const kind = panel === "status" ? "usage" : panel === "brain" ? "docs" : panel;
+      // Panel names the model uses -> the tile id that actually exists.
+      // "portfolio" and "tasks" are what the panel list and the system prompt
+      // have always called these, but the tiles are registered as "stocks" and
+      // "todo", so both silently spawned nothing while the caller was told the
+      // panel opened. "brain" routes to docs (the 3D vision tile was retired).
+      const PANEL_TO_TILE: Record<string, string> = {
+        status: "usage",
+        brain: "docs",
+        portfolio: "stocks",
+        tasks: "todo",
+      };
+      const kind = PANEL_TO_TILE[panel] ?? panel;
       executeToolCall({ tool: "spawn_tile", type: kind } as unknown as ParsedToolCall);
       return `${kind} panel opened`;
     }

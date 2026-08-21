@@ -334,8 +334,14 @@ export default function SettingsPanel({ open, onClose }: Props) {
               </div>
             </div>
             <div className="settings-stub">
+              {/* This used to end "Stored locally — never leaves this machine",
+                  which was true of the desktop build and is false here: memories
+                  live in the server's database and are sent to the model as
+                  context on the turns that retrieve them. A privacy claim the
+                  product cannot keep is worse than no claim, and DIRECTION.md
+                  makes not overstating this a rule. */}
               {memoryEnabled
-                ? "Nova retrieves relevant memories silently on each turn. Stored locally — never leaves this machine."
+                ? "Nova retrieves relevant memories silently on each turn. Stored on the server for your account, and included in the model request when they are used."
                 : "Memory retrieval paused. Stored memories are kept but not consulted."}
             </div>
 
