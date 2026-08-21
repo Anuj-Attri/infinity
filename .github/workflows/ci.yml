@@ -69,8 +69,13 @@ jobs:
         # So: start the real image, hit /health, and confirm /echo/stream arrives
         # INCREMENTALLY. A buffering layer turns a live stream into one lump at
         # the end, and that is miserable to diagnose once a model is in the path.
+        #
+        # SETUP_TOKEN is set so the browser suite below can claim the instance.
+        # Without it the container correctly REFUSES first-run setup, because a
+        # request arriving over the docker bridge is not loopback — which is the
+        # same branch a real internet request lands in.
         run: |
-          docker run -d --name api -p 8000:8000 -e PORT=8000 infinity-backend:ci
+          docker run -d --name api -p 8000:8000 -e PORT=8000 -e SETUP_TOKEN=ci-setup-token infinity-backend:ci
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:8000/health && break
             sleep 1
@@ -132,4 +137,46 @@ jobs:
                  exit 1; }
           echo "OK: skills indexed in the image."
 
-          docker rm -f api
+      # The container serves the SPA at "/" and the API on the same origin, so
+      # this drives the REAL artifact — one process, exactly what deploys — not
+      # a dev server pair that only resembles it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install the browser harness
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Every tile opens
+        working-directory: frontend
+        env:
+          APP_URL: http://127.0.0.1:8000
+          SETUP_TOKEN: ci-setup-token
+        run: node e2e/smoke.mjs
+
+      - name: The app actually does things
+        working-directory: frontend
+        env:
+          APP_URL: http://127.0.0.1:8000
+          SETUP_TOKEN: ci-setup-token
+        run: node e2e/functional.mjs
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs api
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-screenshots
+          path: frontend/e2e/shots/
+          retention-days: 7
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f api || true
