@@ -19,9 +19,15 @@ cd frontend && npm install && npm run dev
 ## Test
 
 ```bash
-cd backend && pytest
+cd backend && pytest                  # incl. the security gate (see docs/PORTING.md)
 cd frontend && npm run typecheck
+cd frontend && npm run smoke          # every tile opens, in a real browser
+cd frontend && node e2e/functional.mjs
 ```
+
+CI runs all of it against the built container image, because several bugs have
+existed **only** in the image — a `.dockerignore` rule that excluded the
+frontend, and one that nearly ate the skills content.
 
 Streaming must be checked from a terminal — a browser `fetch` that awaits the
 whole body cannot tell a stream from a lump:
@@ -50,6 +56,7 @@ it the suite goes green the day search breaks and returns nothing.
 | `AGENTS.md` | working brief: locked decisions, invariants, landmine ledgers (gitignored) |
 | `docs/DIRECTION.md` | product thesis |
 | `docs/MARK4.md` | original build plan — see the ⚠️ rows in `AGENTS.md` for what has since changed |
+| `docs/PORTING.md` | **how to move a Mark 3 module across safely** — read before porting anything |
 | `docs/RUNBOOK.md` | steps needing a browser login |
 | `docs/MARK3-PUNCHLIST.md` | previous build's defect list, kept as history |
 

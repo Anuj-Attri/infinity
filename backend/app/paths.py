@@ -35,11 +35,13 @@ def data_dir() -> Path:
     d = Path(raw) if raw else (_REPO_ROOT / ".data")
     try:
         d.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        # A read-only or missing mount point is worth failing loudly on, but not
-        # at import time — the caller that actually writes will raise with a far
-        # more useful message than "could not create directory" at startup.
-        pass
+    except Exception as e:
+        # Not raised here: at import time this would abort startup with a worse
+        # message than the write that actually fails. But it is not swallowed
+        # either — a read-only or missing DATA_DIR mount is the difference
+        # between "state persists" and "state silently does not", and that
+        # deserves a line in the log rather than nothing at all.
+        print(f"[paths] cannot create DATA_DIR {d}: {e}", flush=True)
     return d
 
 

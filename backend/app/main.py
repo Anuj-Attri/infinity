@@ -245,7 +245,9 @@ _AUTH_EXEMPT: frozenset[str] = frozenset({
     "/auth/status",
     "/auth/setup",
     "/auth/login",
-    # Dev convenience — schema/docs leak no secrets.
+    # Only registered as routes at all when ENABLE_API_DOCS=1 (see above), so
+    # these are inert in a normal deployment. Listed so that turning docs on does
+    # not also require remembering to exempt them.
     "/openapi.json", "/docs", "/redoc",
     "/docs/oauth2-redirect",
 })
@@ -269,8 +271,23 @@ async def require_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Authentication required")
 
 
-app = FastAPI(title="Mark 4", version="0.0.1",
-              lifespan=_lifespan, dependencies=[Depends(require_auth)])
+# The interactive docs publish a complete map of every endpoint, every parameter
+# name and every request shape, to anyone, with no credential. On loopback that
+# was "dev convenience, leaks no secrets" and it was true. On a public URL it is
+# reconnaissance handed over for free — it tells an attacker exactly which of the
+# 96 routes exist and what to send them.
+#
+# Off unless explicitly asked for. Opt-in, so a deployment does not publish its
+# own schema because nobody remembered to turn it off.
+_DOCS = os.environ.get("ENABLE_API_DOCS") == "1"
+
+app = FastAPI(
+    title="Mark 4", version="0.0.1",
+    lifespan=_lifespan, dependencies=[Depends(require_auth)],
+    docs_url="/docs" if _DOCS else None,
+    redoc_url="/redoc" if _DOCS else None,
+    openapi_url="/openapi.json" if _DOCS else None,
+)
 
 # CORS: an explicit allowlist from the environment. NEVER "*" — that was safe on
 # loopback in Mark 3 (the Tauri WebView loaded from tauri://localhost, a
