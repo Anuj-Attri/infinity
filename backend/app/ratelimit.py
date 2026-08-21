@@ -5,11 +5,18 @@ cost ~100 ms, which slows an attacker down but does not stop one — a few
 thousand guesses an hour against a human-chosen master password is a real
 attack, and the endpoint is public by necessity.
 
-Deliberately dependency-free and in-process. `railway.json` pins numReplicas: 1,
-so one process sees every request and a shared counter would be ceremony. THE
-MOMENT THAT CHANGES, this becomes per-replica and the effective limit multiplies
-by the replica count — at which point it moves to Postgres or Redis. That is a
-real tripwire, not a footnote: scaling out silently weakens this.
+Deliberately dependency-free and in-process, which is correct for EXACTLY ONE
+replica: one process sees every request, and a shared counter would be ceremony.
+
+⚠ THIS IS NOW ENFORCED BY A DASHBOARD SETTING, NOT BY CODE. `railway.json` used
+to pin `numReplicas: 1`, but that field lives in Railway's "Regions & Replicas"
+block, and config-as-code overrides the dashboard — so pinning it also froze the
+REGION control. Replicas are set in the dashboard now (see docs/RUNBOOK.md).
+
+The tripwire is therefore weaker than it was and worth stating plainly: scaling
+to two replicas DOUBLES the effective rate limit, silently, with nothing in this
+repo objecting. At that point this moves to Postgres or Redis. The same is true
+of the mission runtime, which keeps live missions in process memory.
 
 Cloudflare or Railway's own edge should sit in front of this eventually. Their
 limits protect the platform from floods; this one protects specific endpoints
