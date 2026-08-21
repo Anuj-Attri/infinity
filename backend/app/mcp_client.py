@@ -285,6 +285,23 @@ async def _session(client: httpx.AsyncClient, base_headers: dict[str, str]) -> d
 
 
 async def _rpc(url: str, token: str | None, method: str, params: dict[str, Any] | None) -> Any:
+    # SSRF gate. Remote HTTP is now the ONLY MCP transport — the stdio hands are
+    # unmounted — so every MCP call is a request to a URL the caller chose. With
+    # no check, "connect an MCP server" is a primitive for making our backend
+    # fetch anything reachable from inside our own infrastructure: the platform's
+    # private network, another service on it, or the link-local metadata endpoint
+    # that hands out credentials.
+    #
+    # browse.py already solved this properly (resolve every address, reject
+    # anything that is not public internet, re-validate after redirects), so this
+    # reuses it rather than growing a second, weaker copy that drifts.
+    from .browse import _assert_safe_url
+    from fastapi import HTTPException
+    try:
+        _assert_safe_url(url)
+    except HTTPException as e:
+        raise MCPError(f"refused: {e.detail}") from e
+
     base_headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
