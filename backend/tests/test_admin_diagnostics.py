@@ -23,6 +23,10 @@ FAKE = {
     "NEWS_API_KEY": "CANARY-news-key-must-not-appear",
     "VOYAGE_API_KEY": "CANARY-voyage-key-must-not-appear",
     "DATABASE_URL": "postgres://user:CANARYpassword@host/db",
+    # The door key. The console reports on it, so it is exactly as capable of
+    # leaking as the rest — and it is the one secret that, alone, makes the whole
+    # deployment reachable.
+    "ACCESS_TOKEN": "CANARY-access-token-must-not-appear",
 }
 
 
@@ -39,7 +43,9 @@ def client(monkeypatch, tmp_path):
     main = importlib.reload(app.main)
     # Exempt only the route under test; everything else keeps its gate.
     main._AUTH_EXEMPT = frozenset(set(main._AUTH_EXEMPT) | {"/admin/diagnostics"})
-    return TestClient(main.app)
+    # ACCESS_TOKEN is set above, so the door is live and TestClient does NOT
+    # present as loopback — every request must carry the key or 404.
+    return TestClient(main.app, headers={"X-Access-Token": FAKE["ACCESS_TOKEN"]})
 
 
 def test_no_secret_value_appears_anywhere_in_the_response(client):
@@ -68,6 +74,30 @@ def test_every_non_ok_subsystem_names_a_way_out(client):
         if s["status"] != "ok":
             assert s["unblock"], f"{s['id']} is {s['status']} with no unblock step"
         assert s["detail"], f"{s['id']} has no detail"
+
+
+def test_the_console_says_where_the_service_is_running(monkeypatch, tmp_path):
+    """"Which region is this actually in?" had no answer for hours.
+
+    Railway's API reports region null permanently, so the console is one of only
+    two places that can answer it (the other is the boot log). If this block
+    silently disappeared, the next region question would be just as unanswerable.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("RAILWAY_PROJECT_ID", "p")
+    monkeypatch.setenv("RAILWAY_REPLICA_REGION", "us-east4-eqdc4a")
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "production")
+    import app.paths, app.auth, app.admin, app.main
+    importlib.reload(app.paths); importlib.reload(app.auth); importlib.reload(app.admin)
+    main = importlib.reload(app.main)
+    main._AUTH_EXEMPT = frozenset(set(main._AUTH_EXEMPT) | {"/admin/diagnostics"})
+    body = TestClient(main.app).get("/admin/diagnostics").json()
+
+    host = body["service"]["hosting"]
+    assert host["region"] == "us-east4-eqdc4a"
+    assert host["platform"] == "railway"
+    assert host["environment"] == "production"
+    assert host["behind_proxy"] is True
 
 
 def test_required_config_is_flagged_when_missing(monkeypatch, tmp_path):
