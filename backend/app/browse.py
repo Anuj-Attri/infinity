@@ -76,10 +76,55 @@ _ATTR_OK = {"a": {"href", "title"}, "img": {"src", "alt", "title"}}
 
 # ------------------------------------------------------------------ SSRF ---
 
+# Ranges that are NOT the public internet but that `is_private` does not flag.
+#
+# 100.64.0.0/10 is the one that matters here: RFC 6598 shared address space, and
+# also Tailscale's range. Python reports it as is_private=False, is_global=False,
+# is_reserved=False — so the obvious check waves it straight through, and an
+# SSRF into it reaches carrier or tailnet hosts. A test caught this; nothing in
+# the code said it.
+#
+# Listed explicitly rather than leaning on stdlib properties, because the meaning
+# of is_private/is_global has changed between Python versions. A security check
+# whose behaviour depends on the interpreter minor version is not a check.
+_BLOCKED_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "0.0.0.0/8",          # this network
+    "10.0.0.0/8",         # RFC1918
+    "100.64.0.0/10",      # RFC6598 CGNAT / Tailscale
+    "127.0.0.0/8",        # loopback
+    "169.254.0.0/16",     # link-local, incl. cloud metadata at 169.254.169.254
+    "172.16.0.0/12",      # RFC1918
+    "192.0.0.0/24",       # IETF protocol assignments
+    "192.0.2.0/24",       # TEST-NET-1
+    "192.88.99.0/24",     # deprecated 6to4 relay anycast
+    "192.168.0.0/16",     # RFC1918
+    "198.18.0.0/15",      # benchmarking
+    "198.51.100.0/24",    # TEST-NET-2
+    "203.0.113.0/24",     # TEST-NET-3
+    "224.0.0.0/4",        # multicast
+    "240.0.0.0/4",        # reserved
+    "255.255.255.255/32", # broadcast
+    "::/128",             # unspecified
+    "::1/128",            # loopback
+    "fc00::/7",           # unique-local
+    "fe80::/10",          # link-local
+    "ff00::/8",           # multicast
+    "64:ff9b::/96",       # NAT64
+    "2001:db8::/32",      # documentation
+))
+
+
 def _ip_is_public(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
+        return False
+    # An IPv4-mapped IPv6 address (::ffff:127.0.0.1) must be judged as the IPv4
+    # address it actually reaches, or the mapping is a bypass.
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    if any(addr in net for net in _BLOCKED_NETS):
         return False
     return not (addr.is_private or addr.is_loopback or addr.is_link_local
                 or addr.is_multicast or addr.is_reserved or addr.is_unspecified)
