@@ -22,9 +22,13 @@ export type AuthPhase = "loading" | "setup" | "login" | "authed" | "unreachable"
 type Ctx = {
   phase: AuthPhase;
   deviceName: string | null;
+  /** True when this deployment requires an out-of-band SETUP_TOKEN to claim. */
+  setupTokenRequired: boolean;
+  /** False when first-run setup is refused for this caller entirely. */
+  setupAvailable: boolean;
   /** "dpapi" | "identity" — surfaced so setup UI can warn on unencrypted fallback. */
   storeBackend: string | null;
-  setup: (password: string) => Promise<void>;
+  setup: (password: string, setupToken?: string) => Promise<void>;
   login: (password: string, deviceName: string) => Promise<void>;
   logout: () => Promise<void>;
   resetAll: () => Promise<void>;
@@ -49,6 +53,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<AuthPhase>("loading");
   const [deviceName, setDeviceName] = useState<string | null>(null);
   const [storeBackend, setStoreBackend] = useState<string | null>(null);
+  const [setupTokenRequired, setSetupTokenRequired] = useState(false);
+  const [setupAvailable, setSetupAvailable] = useState(true);
 
   // Keep api.ts's token in sync and expose a setter the 401 handler can use.
   const applyToken = useCallback((t: string | null, name: string | null) => {
@@ -64,12 +70,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       status = await getAuthStatus();
     } catch {
-      // Backend unreachable (home machine off, Tailscale down, no network).
+      // Backend unreachable (deploy down, no network, wrong API base URL).
       // Show a clean retry screen rather than a login form that can't work.
       setPhase("unreachable");
       return;
     }
     setStoreBackend(status.store_backend);
+    setSetupTokenRequired(!!status.setup_token_required);
+    // Absent on an older backend — treat as available so we do not lock out a
+    // deployment that predates the flag.
+    setSetupAvailable(status.setup_available !== false);
 
     if (!status.password_set) {
       applyToken(null, null);
@@ -111,8 +121,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
-  const setup = useCallback(async (password: string) => {
-    await authSetup(password);
+  const setup = useCallback(async (password: string, setupToken?: string) => {
+    await authSetup(password, setupToken);
     // Password now set; move to login (the device still needs a token).
     setPhase("login");
   }, []);
@@ -137,8 +147,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [applyToken]);
 
   const value = useMemo<Ctx>(() => ({
-    phase, deviceName, storeBackend, setup, login, logout, resetAll, refresh,
-  }), [phase, deviceName, storeBackend, setup, login, logout, resetAll, refresh]);
+    phase, deviceName, storeBackend, setupTokenRequired, setupAvailable,
+    setup, login, logout, resetAll, refresh,
+  }), [phase, deviceName, storeBackend, setupTokenRequired, setupAvailable,
+       setup, login, logout, resetAll, refresh]);
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
 }

@@ -69,7 +69,14 @@ async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> 
 // ── Auth bootstrap endpoints (use raw fetch — must work with no token,
 // and a 401 here is an expected login failure, not a session expiry) ──
 
-export type AuthStatus = { password_set: boolean; store_backend: string };
+export type AuthStatus = {
+  password_set: boolean;
+  store_backend: string;
+  /** True when the deployment requires an out-of-band SETUP_TOKEN to claim it. */
+  setup_token_required?: boolean;
+  /** False when first-run setup is disabled entirely for this caller. */
+  setup_available?: boolean;
+};
 export type AuthDevice = {
   id: string;
   device_name: string;
@@ -84,11 +91,13 @@ export async function getAuthStatus(): Promise<AuthStatus> {
   return r.json();
 }
 
-export async function authSetup(password: string): Promise<void> {
+export async function authSetup(password: string, setupToken?: string): Promise<void> {
   const r = await apiFetch(`${BASE}/auth/setup`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify(
+      setupToken ? { password, setup_token: setupToken } : { password },
+    ),
   });
   if (!r.ok) {
     let detail = "Setup failed";

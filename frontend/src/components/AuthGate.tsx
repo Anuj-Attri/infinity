@@ -51,9 +51,10 @@ function UnreachableScreen() {
 }
 
 function SetupScreen() {
-  const { setup, storeBackend } = useAuth();
+  const { setup, storeBackend, setupTokenRequired, setupAvailable } = useAuth();
   const [pw, setPw] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -63,15 +64,35 @@ function SetupScreen() {
     setErr(null);
     if (pw.length < 6) { setErr("At least 6 characters."); return; }
     if (pw !== confirm) { setErr("Passwords don't match."); return; }
+    if (setupTokenRequired && !token.trim()) { setErr("Setup token required."); return; }
     setBusy(true);
     try {
-      await setup(pw);
+      await setup(pw, setupTokenRequired ? token.trim() : undefined);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
     }
   };
+
+  // First-run setup is unauthenticated by nature — there is no credential yet to
+  // check. On a public URL that means whoever POSTs first owns the instance, so
+  // the backend refuses unless the caller proves it is the operator. Say that,
+  // rather than showing a form that will always fail.
+  if (!setupAvailable) {
+    return (
+      <div className="authgate">
+        <div className="authgate-card">
+          <div className="authgate-mark">∞</div>
+          <h1 className="authgate-title">Not claimable.</h1>
+          <p className="authgate-sub">
+            First-run setup is disabled on this deployment. Set <code>SETUP_TOKEN</code> in
+            the environment, redeploy, and this screen will ask for it.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="authgate">
@@ -106,9 +127,25 @@ function SetupScreen() {
           onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
         />
 
+        {setupTokenRequired && (
+          <input
+            className="authgate-input"
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="Setup token"
+            autoComplete="off"
+            onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
+          />
+        )}
+
         {err && <div className="authgate-error">{err}</div>}
 
-        <button className="authgate-btn" onClick={submit} disabled={busy || !pw || !confirm}>
+        <button
+          className="authgate-btn"
+          onClick={submit}
+          disabled={busy || !pw || !confirm || (setupTokenRequired && !token.trim())}
+        >
           {busy ? "Setting…" : "Set password"}
         </button>
       </div>

@@ -73,6 +73,7 @@ else:
 import asyncio  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
+import secrets  # noqa: E402
 import time  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 from typing import Any  # noqa: E402  # MUST be importable: `from __future__ import
@@ -773,6 +774,8 @@ async def health() -> dict[str, object]:
 
 class AuthSetupIn(BaseModel):
     password: str
+    # Required when SETUP_TOKEN is configured. See _check_setup_allowed().
+    setup_token: str | None = None
 
 
 class AuthLoginIn(BaseModel):
@@ -784,19 +787,69 @@ class AuthIssueIn(BaseModel):
     device_name: str
 
 
+# First-run setup is UNAUTHENTICATED by nature — there is no credential yet to
+# authenticate with. On a laptop reachable only from loopback that is fine. On a
+# public URL it means the first stranger to POST /auth/setup owns the instance:
+# they set the master password, mint themselves a device token, and the real
+# owner is locked out of their own deployment.
+#
+# So a hosted instance must prove the caller is the operator out-of-band. The
+# proof is SETUP_TOKEN, set in the deployment's environment — something only
+# whoever controls the deployment can read.
+#
+# Rules, in order:
+#   SETUP_TOKEN set        -> the request must carry a matching setup_token
+#   not set, from loopback -> allowed (local dev, no configuration required)
+#   not set, from anywhere -> REFUSED
+#
+# Behind a proxy `request.client.host` is the proxy's address, never loopback,
+# so a hosted deployment falls into the refuse branch by default rather than by
+# remembering to configure something.
+_SETUP_TOKEN = (os.environ.get("SETUP_TOKEN") or "").strip()
+
+
+def _is_loopback(request: Request) -> bool:
+    host = (request.client.host if request.client else "") or ""
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+def _check_setup_allowed(request: Request, supplied: str | None) -> None:
+    if _SETUP_TOKEN:
+        # compare_digest: constant time, so a wrong token cannot be found by
+        # timing one character at a time.
+        if not supplied or not secrets.compare_digest(supplied.strip(), _SETUP_TOKEN):
+            raise HTTPException(status_code=403, detail="Invalid setup token.")
+        return
+    if _is_loopback(request):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=("First-run setup is disabled on this deployment. Set SETUP_TOKEN "
+                "in the environment and supply it to claim this instance."),
+    )
+
+
 @app.get("/auth/status")
-def auth_status() -> dict[str, Any]:
+def auth_status(request: Request) -> dict[str, Any]:
     """Unauthenticated. First-run UI reads this to choose setup vs login."""
     return {
         "password_set": auth_layer.is_password_set(),
         "store_backend": auth_layer.store_backend(),
+        # Lets the setup form ask for the token instead of failing with a 403
+        # the user cannot interpret.
+        "setup_token_required": bool(_SETUP_TOKEN),
+        "setup_available": bool(_SETUP_TOKEN) or _is_loopback(request),
     }
 
 
 @app.post("/auth/setup")
-def auth_setup(body: AuthSetupIn) -> dict[str, Any]:
+def auth_setup(body: AuthSetupIn, request: Request) -> dict[str, Any]:
     """Unauthenticated, first-run only. 409 if a password already exists
-    (changing it requires /auth/reset from an authenticated device)."""
+    (changing it requires /auth/reset from an authenticated device).
+
+    Gated by _check_setup_allowed(): on a public URL, whoever POSTs here first
+    would otherwise own the instance."""
+    _check_setup_allowed(request, body.setup_token)
     if auth_layer.is_password_set():
         raise HTTPException(status_code=409, detail="Already configured")
     pw = (body.password or "").strip()

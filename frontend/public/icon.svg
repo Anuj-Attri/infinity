@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Infinity">
+  <!-- The mark is the lemniscate the app already uses on its auth screen.
+       Colours are the design system's own accent tokens (supernova.css:30-31),
+       not invented ones — the favicon should not be the one place with a
+       hardcoded colour that drifts from the theme. -->
+  <defs>
+    <linearGradient id="a" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#221a45"/>
+      <stop offset="1" stop-color="#8b7cf6"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#a)"/>
+  <!-- Lemniscate drawn as two mirrored loops, stroked so it reads at 16px. -->
+  <path
+    d="M32 32c-4.2-6.4-8-9.6-12.2-9.6-5.3 0-9.3 4.3-9.3 9.6s4 9.6 9.3 9.6C24 41.2 27.8 38 32 31.6
+       m0 .4c4.2-6.4 8-9.6 12.2-9.6 5.3 0 9.3 4.3 9.3 9.6s-4 9.6-9.3 9.6C40 41.6 36.2 38.4 32 32z"
+    fill="none" stroke="#ffffff" stroke-width="4.4"
+    stroke-linecap="round" stroke-linejoin="round" opacity="0.96"/>
+</svg>
