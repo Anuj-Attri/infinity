@@ -1,0 +1,16 @@
+# Normalise to LF in the repository. The backend builds and runs in a Linux
+# container: a Dockerfile or shell script checked in with CRLF fails there with
+# an error that reads like a missing file, which is a bad afternoon.
+* text=auto eol=lf
+
+# Never let Git touch these.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+*.onnx binary
+*.gguf binary

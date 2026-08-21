@@ -1,0 +1,46 @@
+# Secrets — nothing in this block may ever be committed.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.jks
+keystore.properties
+vault/
+
+# Local data / models
+.data/
+.run/
+.ml/
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+*.local
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Agent + session scratch (Mark 3 lesson: these leak personal context)
+.claude/
+.cursor/
+*.scratchpad.md
+
+# The shared agent brief. Gitignored by owner decision: all agents work in this
+# one workspace, and it should never enter history.
+AGENTS.md
+NOTES.local.md

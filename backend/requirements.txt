@@ -1,0 +1,17 @@
+# M0 — the skeleton only. Add a dependency when the milestone that needs it
+# lands, not in anticipation.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+python-dotenv==1.0.1
+httpx==0.28.1
+
+# M1+ (uncomment as milestones land)
+# supabase==2.11.0
+# asyncpg==0.30.0
+# pgvector==0.3.6
+# PyJWT==2.10.1
+# sentry-sdk[fastapi]==2.19.2
+
+# Dev
+pytest==8.3.4
