@@ -19,6 +19,7 @@ import TopToolbar from "./TopToolbar";
 import DrawingLayer from "./DrawingLayer";
 import { useCanvas } from "../state/CanvasContext";
 import { useTool } from "../state/ToolContext";
+import { useCanvasTouch } from "../state/useCanvasTouch";
 
 type Props = {
   visible: boolean;
@@ -50,6 +51,12 @@ export default function Dashboard({ visible, onOpenSettings, onOpenHistory, onRe
   const { tool } = useTool();
   const toolRef = useRef(tool);
   toolRef.current = tool;
+
+  // Touch pan + pinch-zoom. Dashboard's wheel/mouse handlers are mouse-only,
+  // so without this the canvas cannot be moved or zoomed on any touch device.
+  // Disabled while a pen/eraser tool is active, matching the mouse pan rule,
+  // so DrawingLayer owns the gesture instead.
+  useCanvasTouch(canvasRef, { enabled: tool === "select" });
 
   // Pan-drag bookkeeping.
   const dragRef = useRef<{

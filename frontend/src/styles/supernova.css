@@ -729,6 +729,22 @@ button { font-family: inherit; color: inherit; }
   cursor: grab;
 }
 .dash-canvas.panning { cursor: grabbing; }
+
+/* TOUCH GESTURES ON THE FIELD BELONG TO THE APP.
+   Without this the browser claims the gesture: it treats the first pointermove
+   as a scroll and fires pointercancel, so the pan/pinch handler receives a
+   pointerdown, one move, and then nothing. That is not a missing listener and
+   it looks exactly like one — the canvas simply never moves under a finger.
+   Mark 3 got this right on `.mcanvas`, its mobile canvas; that rule came across
+   with the stylesheet but `.mcanvas` is never rendered here, so the real canvas
+   was left on the default. */
+.dash-canvas { touch-action: none; }
+/* Tile interiors keep native scrolling — a chat log must still scroll. */
+.dash-canvas .free-tile { touch-action: auto; }
+/* ...except the parts that ARE drag handles, which the app drives itself. */
+.dash-canvas .tile-head,
+.dash-canvas .free-resize-handle { touch-action: none; }
+
 /* Tile interiors keep their normal cursors. */
 .dash-canvas .free-tile,
 .dash-canvas .free-tile * { cursor: auto; }

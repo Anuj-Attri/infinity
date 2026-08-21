@@ -260,6 +260,18 @@ jobs:
           ACCESS_TOKEN: ci-door-key
         run: node e2e/functional.mjs
 
+      # The canvas must be usable with fingers, not only a mouse. This is a
+      # whole-app capability that no unit test can reach: it needs a real touch
+      # pointer stream AND the right CSS, and it was silently absent — the app
+      # looked fine because tiles still dragged while the field could not move.
+      - name: The canvas moves under a finger
+        working-directory: frontend
+        env:
+          APP_URL: http://127.0.0.1:8000
+          SETUP_TOKEN: ci-setup-token
+          ACCESS_TOKEN: ci-door-key
+        run: node e2e/touch.mjs
+
       - name: Container logs on failure
         if: failure()
         run: docker logs api
