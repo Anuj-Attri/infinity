@@ -179,14 +179,19 @@ def _subsystems() -> list[Subsystem]:
         id="access", name="Public reachability",
         status="ok" if locked else "blocked",
         detail=("Locked. Every path except /health and /access returns 404 without "
-                "the access token, so the URL behaves as though nothing is there."
+                "the access token, so the URL behaves as though nothing is there. "
+                "Loopback is NOT a bypass — otherwise an SSRF against 127.0.0.1 "
+                "would walk straight through."
                 if locked else
-                "OPEN. Anyone with the URL reaches this app. There is no account "
-                "layer yet — state is shared process-wide and several routes "
-                "address resources by id without checking an owner."),
+                "UNCONFIGURED, so this process serves LOOPBACK ONLY — a hosted "
+                "deployment answers nothing but /health. Not a working app, and "
+                "not an exposed one. There is no account layer yet: state is "
+                "shared process-wide and several routes address resources by id "
+                "without checking an owner, which is why the door exists at all."),
         unblock=None if locked else
-                "Set ACCESS_TOKEN (waitlist link: /access#<token>). Remove it at "
-                "M3, when real accounts replace a shared secret.",
+                "Set ACCESS_TOKEN to make the deployment reachable at all "
+                "(waitlist link: /access#<token>). Remove it at M3, when real "
+                "accounts replace a shared secret.",
     ))
 
     # --- error reporting ----------------------------------------------------
