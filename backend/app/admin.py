@@ -75,7 +75,7 @@ _CONFIG_KEYS: list[tuple[str, str, bool]] = [
     ("DATABASE_URL", "Postgres. Per-account storage and retrieval (M3+).", False),
     ("SUPABASE_URL", "Auth and storage (M3+).", False),
     ("SUPABASE_SERVICE_ROLE_KEY", "Backend DB access. NOTE: bypasses RLS entirely.", False),
-    ("VOYAGE_API_KEY", "Embeddings, and therefore Vault search and citations (M5).", False),
+    ("VOYAGE_API_KEY", "Embeddings (voyage-4, 1024-dim), and therefore Vault vector search, note auto-linking and graph edges. Unset = chunks are stored WITHOUT vectors and search falls back to full text; POST /vault/reindex backfills once it is set.", False),
     ("ACCESS_TOKEN", "The outermost door. UNSET means the service answers only /health to anything that is not loopback — inert, not open. Required for a deployment to be usable at all.", True),
     ("TRUST_PROXY_HEADERS", "Usually unnecessary — Railway is auto-detected from its injected variables. Set to 0 to force forwarded headers to be IGNORED.", False),
     ("DATA_DIR", "Where state is written. Unset = the container's own disk, which a redeploy WIPES.", False),
@@ -118,13 +118,28 @@ def _subsystems() -> list[Subsystem]:
     ))
 
     # --- embeddings ---------------------------------------------------------
+    try:
+        from .providers import embeddings as _emb
+        emb_on = _emb.is_configured()
+        emb_model, emb_dim = _emb.VOYAGE_MODEL, _emb.VOYAGE_DIM
+    except Exception as e:  # pragma: no cover - import guard
+        emb_on, emb_model, emb_dim = False, "?", 0
+        print(f"[admin] embeddings status unavailable: {e}", flush=True)
     out.append(Subsystem(
         id="embeddings", name="Embeddings",
-        status="blocked",
-        detail="No embedding provider is wired. Vault search, memory recall, "
-               "skills semantic matching and session overview all raise rather "
-               "than returning a zero vector.",
-        unblock="M5: Voyage voyage-4 (1024-dim) against Postgres/pgvector.",
+        status="ok" if emb_on else "blocked",
+        detail=(f"Voyage {emb_model} at {emb_dim} dimensions. Every stored vector "
+                f"records the model that made it, so a provider change is detected "
+                f"rather than silently mixing incomparable vectors."
+                if emb_on else
+                "No embedding provider. Vault vector search, note auto-linking and "
+                "graph edges are inert — chunks are still stored and still "
+                "full-text searchable, they just have no vector. Nothing returns a "
+                "zero vector, which would make search produce confident noise."),
+        unblock=(None if emb_on else
+                 "Set VOYAGE_API_KEY, then POST /vault/reindex to backfill the "
+                 "existing corpus — scan() alone will not, because it only "
+                 "revisits files whose mtime changed."),
     ))
 
     # --- retrieval / tenancy ------------------------------------------------

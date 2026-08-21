@@ -211,7 +211,9 @@ def test_no_outbound_request_bypasses_the_ssrf_guard():
         "chat.py":        "fixed provider endpoints (OpenRouter/Anthropic/OpenAI/Gemini)",
         "dispatch.py":    "fixed OpenRouter endpoint",
         "main.py":        "fixed third-party APIs (weather, news, stocks)",
-        "embed.py":       "fixed embedding host",
+        "embed.py":       "no outbound of its own; forwards to providers/embeddings.py",
+        "embeddings.py":  "fixed Voyage endpoint (VOYAGE_URL is a module constant, "
+                          "never built from caller input)",
         "ocr.py":         "no outbound of its own; uses the dispatch provider",
     }
     offenders: list[str] = []

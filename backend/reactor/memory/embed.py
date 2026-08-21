@@ -1,74 +1,48 @@
-"""Embeddings — NO PROVIDER IS CONFIGURED IN THIS BUILD.
+"""Embeddings — the compatibility shim in front of the real provider.
 
-The `nomic-embed-text` lane this module calls was served by a local Ollama
-container that no longer exists (AGENTS.md: Ollama is out of scope). Every
-call therefore fails, loudly, with EmbedError.
+This module used to POST to a local Ollama host serving `nomic-embed-text`. That
+host does not exist in a container, so every call raised and four features died
+quietly: vault search, note auto-linking, vault graph edges, and session-overview
+grounding. The provider now lives at `app.providers.embeddings` (Voyage
+`voyage-4`, 1024-dim) and this file only forwards to it.
 
-Embeddings land at M5: Voyage `voyage-4` (1024-dim) against Postgres/pgvector,
-with `embedding_model` recorded per chunk. EMBED_DIM stays 768 here until that
-lands — do not repoint it ahead of the column.
+It is kept, rather than deleted and every import rewritten, because it is the
+name six call sites already reach for. Redirecting one module is a smaller and
+much more reviewable change than editing six — and it leaves exactly one place
+to look when the next question is "where do embeddings actually come from".
 
-Failure is never softened into a zero vector: a zero vector makes every
-similarity search return plausible garbage instead of an error.
+THE CONTRACT IS UNCHANGED, AND THE IMPORTANT HALF OF IT IS THE FAILURE:
+a failure raises EmbedError. It never returns a zero vector, because a zero
+vector makes every similarity search return plausible garbage — ranked and
+confident — instead of an error.
 
-The function returns a numpy float32 array suitable for cosine similarity
-against other embeddings in the store.
+`EMBED_DIM` is now the ACTIVE provider's dimension rather than a constant. It
+used to be 768 (nomic-embed-text) with a note not to repoint it ahead of the
+storage column; the storage is a BLOB either way, and what actually keeps
+vectors comparable is that each row now records the model and dimension that
+produced it. See `app/providers/embeddings.py`.
 """
 
 from __future__ import annotations
 
-import os
-
-import httpx
 import numpy as np
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
-EMBED_DIM = 768  # nomic-embed-text
-
-
-class EmbedError(RuntimeError):
-    pass
-
-
-# Every failure path carries the SAME plain sentence: there is no embedding
-# provider in this build. The low-level cause is appended in parentheses for
-# diagnosis — it is never a hint to go install something local.
-_NOT_CONFIGURED = (
-    "No embedding provider is configured in this build. Embeddings land at M5: "
-    "Voyage `voyage-4` (1024-dim) against Postgres/pgvector. Until then every "
-    "embed call fails — never with a zero vector, which would make similarity "
-    "search return plausible garbage instead of an error."
+from app.providers.embeddings import (  # noqa: F401  (re-exported on purpose)
+    EmbedError,
+    active_dim,
+    active_model,
+    embed_texts,
+    is_configured,
 )
+from app.providers.embeddings import VOYAGE_DIM as EMBED_DIM
+from app.providers.embeddings import embed_text as _embed_text
 
 
-async def embed_text(text: str) -> np.ndarray:
-    """Embed a single string. Returns a float32 numpy array."""
-    text = (text or "").strip()
-    if not text:
-        return np.zeros(EMBED_DIM, dtype=np.float32)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(
-                f"{OLLAMA_HOST}/api/embed",
-                json={"model": EMBED_MODEL, "input": text},
-            )
-    except httpx.HTTPError as e:
-        raise EmbedError(f"{_NOT_CONFIGURED} (transport: {e})") from e
-    if r.status_code == 404:
-        raise EmbedError(f"{_NOT_CONFIGURED} (model '{EMBED_MODEL}' not served)")
-    if r.status_code != 200:
-        raise EmbedError(f"{_NOT_CONFIGURED} (HTTP {r.status_code})")
-    body = r.json()
-    # Newer /api/embed returns {"embeddings": [[...]]}
-    arr = body.get("embeddings") or body.get("embedding")
-    if not arr:
-        raise EmbedError(f"{_NOT_CONFIGURED} (no embedding in response)")
-    # Handle either [[...]] (plural) or [...] (legacy singular).
-    flat = arr[0] if isinstance(arr[0], list) else arr
-    vec = np.asarray(flat, dtype=np.float32)
-    # Normalize so cosine sim is a dot product.
-    n = np.linalg.norm(vec)
-    if n > 0:
-        vec = vec / n
-    return vec
+async def embed_text(text: str, *, input_type: str = "document") -> np.ndarray:
+    """Embed a single string. Returns a float32, L2-normalised numpy array.
+
+    `input_type` reaches Voyage, which embeds the same sentence differently as a
+    stored document than as a question about one. Callers that are SEARCHING
+    should pass "query"; callers that are INDEXING should leave the default.
+    """
+    return await _embed_text(text, input_type=input_type)  # type: ignore[arg-type]

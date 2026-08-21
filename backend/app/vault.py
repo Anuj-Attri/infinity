@@ -190,6 +190,25 @@ def _db() -> sqlite3.Connection:
             );
             """
         )
+        # A VECTOR WITHOUT ITS PROVENANCE IS NOT COMPARABLE TO ANYTHING.
+        #
+        # `vec` used to be a bare BLOB. Two models produce vectors that are not
+        # comparable even at the same dimension, and the numbers still multiply
+        # and still yield a ranking — so an index holding both looks healthy and
+        # returns noise. At different dimensions it is worse in a different way:
+        # _vec_matrix() concatenates every row and reshapes, so one stale
+        # 768-dim row would break or silently mis-shape the whole matrix.
+        #
+        # Recording which model and dimension produced each row makes both
+        # cases detectable, and lets readers skip rows they cannot compare
+        # instead of comparing them anyway.
+        # SQLite has no ADD COLUMN IF NOT EXISTS. Ask what is there rather than
+        # attempting the ALTER and swallowing the failure — a blanket except
+        # here would also hide a genuinely broken database.
+        have = {r[1] for r in _conn.execute("PRAGMA table_info(chunks)").fetchall()}
+        for col, decl in (("model", "TEXT"), ("dim", "INTEGER")):
+            if col not in have:
+                _conn.execute(f"ALTER TABLE chunks ADD COLUMN {col} {decl}")
         try:
             _conn.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5"
@@ -269,15 +288,38 @@ def _chunk_text(text: str) -> list[str]:
     return out
 
 
-async def _embed(text: str) -> bytes | None:
+_embed_warned = False
+
+
+async def _embed(text: str, *, input_type: str = "document") -> bytes | None:
+    """Vector bytes, or None when embeddings are unavailable.
+
+    None is deliberate and is NOT the same as a zero vector: the chunk is still
+    stored and still reachable by full-text search, it simply has no vector
+    until /vault/reindex fills one in. Swallowing the error keeps ingestion
+    working on a deployment with no embedding provider — but it used to swallow
+    it SILENTLY, which is how the index filled with unembedded chunks and
+    nothing said so. It now says so once.
+
+    `input_type` matters: Voyage embeds the same sentence differently as a
+    stored document than as a question about one, so searching must pass
+    "query" or every result is slightly wrong in a way nothing surfaces.
+    """
+    global _embed_warned
     try:
         from reactor.memory.embed import embed_text
-        v = await embed_text(text)
+        v = await embed_text(text, input_type=input_type)
         n = float(np.linalg.norm(v))
         if n <= 0:
             return None
         return (v / n).astype(np.float32).tobytes()
-    except Exception:
+    except Exception as e:
+        if not _embed_warned:
+            _embed_warned = True
+            print(f"[vault] embeddings unavailable, chunks are being stored "
+                  f"WITHOUT vectors — search falls back to full text. "
+                  f"Run /vault/reindex once a provider is configured. ({e})",
+                  flush=True)
         return None
 
 
@@ -345,10 +387,17 @@ async def _index_file(abs_path: Path) -> str | None:
              json.dumps(domain), json.dumps(tags), kind or "note", ref,
              created, time.time(), mtime, len(body)),
         )
+        # Stamp which model/dimension produced each vector, so a later change
+        # of provider is detectable instead of silently poisoning the index.
+        from .providers.embeddings import active_dim, active_model
+        emodel, edim = active_model(), active_dim()
         for i, (ch, vb) in enumerate(zip(chunks, vecs)):
             cur = db.execute(
-                "INSERT INTO chunks (node_id, ord, text, vec) VALUES (?,?,?,?)",
-                (node_id, i, ch, vb),
+                "INSERT INTO chunks (node_id, ord, text, vec, model, dim) "
+                "VALUES (?,?,?,?,?,?)",
+                (node_id, i, ch, vb,
+                 emodel if vb is not None else None,
+                 edim if vb is not None else None),
             )
             if _fts_ok:
                 db.execute("INSERT INTO fts (text, node_id, chunk_id) VALUES (?,?,?)",
@@ -551,16 +600,41 @@ async def file_report(title: str, text: str, *, source_kind: str,
 # ── retrieval ────────────────────────────────────────────────────────────────
 
 def _vec_matrix() -> tuple[list[tuple[int, str]], Any]:
-    """(chunk meta, normalized matrix) — cached until the index changes."""
+    """(chunk meta, normalized matrix) — cached until the index changes.
+
+    ONLY rows produced by the ACTIVE model at the ACTIVE dimension are loaded.
+    Anything else is skipped rather than compared: a vector from another model
+    still multiplies cleanly against the query and still produces a confident
+    ranking, so mixing them does not fail, it just returns noise. Rows written
+    before provenance existed have model NULL and are treated as unusable —
+    /vault/reindex re-embeds them.
+    """
     if not _vec_cache["dirty"] and _vec_cache["mat"] is not None:
         return _vec_cache["ids"], _vec_cache["mat"]
+
+    from .providers.embeddings import active_dim, active_model
+    model, dim = active_model(), active_dim()
+    if not model or not dim:
+        _vec_cache.update(ids=[], mat=None, dirty=False)
+        return [], None
+
     with _LOCK:
         rows = _db().execute(
-            "SELECT id, node_id, vec FROM chunks WHERE vec IS NOT NULL"
+            "SELECT id, node_id, vec FROM chunks "
+            "WHERE vec IS NOT NULL AND model = ? AND dim = ?",
+            (model, dim),
         ).fetchall()
-    ids = [(r[0], r[1]) for r in rows]
-    mat = (np.frombuffer(b"".join(r[2] for r in rows), dtype=np.float32)
-           .reshape(len(rows), -1) if rows else None)
+    # Belt and braces: a row whose blob length disagrees with its own recorded
+    # dim would still break the reshape below, and one bad row must not take
+    # out the whole index.
+    want = dim * 4  # float32
+    good = [r for r in rows if len(r[2]) == want]
+    if len(good) != len(rows):
+        print(f"[vault] skipped {len(rows) - len(good)} chunk vector(s) whose "
+              f"size disagrees with their recorded dimension", flush=True)
+    ids = [(r[0], r[1]) for r in good]
+    mat = (np.frombuffer(b"".join(r[2] for r in good), dtype=np.float32)
+           .reshape(len(good), dim) if good else None)
     _vec_cache.update(ids=ids, mat=mat, dirty=False)
     return ids, mat
 
@@ -579,7 +653,10 @@ def _node_meta(node_ids: list[str]) -> dict[str, dict]:
 
 
 async def _vector_search(query: str, k: int) -> list[dict]:
-    vb = await _embed(query)
+    # "query", not "document": the same sentence embeds differently as a
+    # question than as stored text, and getting this wrong degrades every
+    # result without failing anything.
+    vb = await _embed(query, input_type="query")
     if vb is None:
         return []
     ids, mat = _vec_matrix()
@@ -952,6 +1029,116 @@ async def vault_stats() -> dict:
             "dir": str(VAULT_DIR)}
 
 
+async def backfill_embeddings(batch: int = 128) -> dict:
+    """Give a vector to every chunk that lacks a usable one.
+
+    `scan()` cannot do this. It reconciles by mtime, so a note whose file has
+    not changed is never revisited — and every chunk written while no embedding
+    provider was configured has `vec IS NULL` on an unchanged file. Without this,
+    configuring a provider fixes nothing that already exists: new notes get
+    vectors, the entire existing corpus stays invisible to vector search, and
+    nothing reports the gap.
+
+    Also re-embeds chunks stamped with a DIFFERENT model or dimension, which is
+    what makes changing provider a supported operation rather than a silent
+    corruption — those rows are skipped by _vec_matrix() until they are redone.
+    """
+    from .providers.embeddings import EmbedError, active_dim, active_model, embed_texts
+
+    model, dim = active_model(), active_dim()
+    if not model or not dim:
+        raise HTTPException(
+            status_code=503,
+            detail="no embedding provider configured; set VOYAGE_API_KEY first",
+        )
+
+    done = failed = 0
+    while True:
+        with _LOCK:
+            rows = _db().execute(
+                "SELECT id, text FROM chunks "
+                "WHERE vec IS NULL OR model IS NOT ? OR dim IS NOT ? "
+                "LIMIT ?",
+                (model, dim, batch),
+            ).fetchall()
+        if not rows:
+            break
+
+        texts = [(r[1] or "").strip() for r in rows]
+        keep = [(r[0], t) for r, t in zip(rows, texts) if t]
+        # An empty chunk can never be embedded; stamp it so the query above
+        # stops returning it, or this loop never terminates.
+        empties = [r[0] for r, t in zip(rows, texts) if not t]
+        if empties:
+            with _LOCK:
+                db = _db()
+                db.executemany(
+                    "UPDATE chunks SET vec=NULL, model=?, dim=? WHERE id=?",
+                    [(model, dim, cid) for cid in empties],
+                )
+                db.commit()
+
+        if keep:
+            try:
+                vecs = await embed_texts([t for _, t in keep], input_type="document")
+            except EmbedError as e:
+                failed += len(keep)
+                print(f"[vault] backfill stopped after {done}: {e}", flush=True)
+                break
+            with _LOCK:
+                db = _db()
+                db.executemany(
+                    "UPDATE chunks SET vec=?, model=?, dim=? WHERE id=?",
+                    [(v.astype(np.float32).tobytes(), model, dim, cid)
+                     for (cid, _), v in zip(keep, vecs)],
+                )
+                db.commit()
+            done += len(keep)
+
+        if len(rows) < batch:
+            break
+
+    if done:
+        _mark_dirty()
+    return {"embedded": done, "failed": failed, "model": model, "dim": dim}
+
+
 @router.post("/reindex")
 async def vault_reindex() -> dict:
-    return await scan(force=True)
+    """Reconcile files against the index, then fill in any missing vectors.
+
+    Both halves are needed. scan() alone leaves every pre-existing chunk without
+    a vector forever, because it only revisits files whose mtime changed.
+    """
+    out = await scan(force=True)
+    from .providers.embeddings import is_configured
+    if is_configured():
+        out["backfill"] = await backfill_embeddings()
+    else:
+        out["backfill"] = {"skipped": "no embedding provider configured"}
+    return out
+
+
+@router.get("/embeddings/status")
+async def vault_embeddings_status() -> dict:
+    """How much of the corpus is actually searchable by vector.
+
+    "Embeddings are on" and "the corpus is embedded" are different facts, and
+    the gap between them is invisible everywhere else.
+    """
+    from .providers.embeddings import active_dim, active_model, status
+    model, dim = active_model(), active_dim()
+    with _LOCK:
+        total = _db().execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        usable = _db().execute(
+            "SELECT COUNT(*) FROM chunks WHERE vec IS NOT NULL AND model IS ? AND dim IS ?",
+            (model, dim),
+        ).fetchone()[0]
+    return {
+        "provider": status(),
+        "chunks_total": total,
+        "chunks_with_usable_vector": usable,
+        "chunks_needing_backfill": total - usable,
+        "hint": (None if total == usable else
+                 "POST /vault/reindex to embed the rest"),
+    }
