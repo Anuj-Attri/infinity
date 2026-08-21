@@ -1,0 +1,927 @@
+"""The Vault — a second brain that learns with the user.
+
+Plain markdown is the source of truth. One note = one file with
+frontmatter; folders are the domain tree ("Computer Science/Data
+Structures/arrays.md"); [[wikilinks]] are the graph. Obsidian can open
+the folder directly — no lock-in, no proprietary store. SQLite carries
+the *index* (chunks, embeddings, FTS, edges) and is rebuildable from
+the files at any time.
+
+Ingestion from any source, one pipeline:
+
+    text/markdown → note                    urls  → readable text → note
+    pdf/docx/xlsx/pptx → extracted → note   image → asset + VLM caption note
+    audio → local Whisper transcript note   chat/mission reports → notes
+
+Every note is auto-categorized into the domain tree (utility LLM,
+validated, biased toward EXISTING domains so the tree converges instead
+of sprawling) and auto-linked to its nearest neighbors (local
+embeddings). Retrieval is hybrid: vector + FTS keyword + 1-hop graph
+expansion, fused by reciprocal rank.
+
+Sovereignty: files local, embeddings pending (M5: Voyage voyage-4, 1024-dim, pgvector),
+index local. Only /vault/query's final synthesis touches the chat lane,
+and only with the retrieved chunks.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import threading
+import time
+import unicodedata
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel
+
+router = APIRouter(prefix="/vault", tags=["vault"])
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+VAULT_DIR = Path(os.environ.get("VAULT_DIR") or (_REPO_ROOT / "vault"))
+_ASSETS = "_assets"
+_DB_PATH = _REPO_ROOT / ".data" / "vault.db"
+
+_CHUNK_CHARS = 1200
+_CHUNK_OVERLAP = 150
+_MAX_FILE_BYTES = 40 * 1024 * 1024
+_LINK_THRESHOLD = 0.55
+_LINK_K = 4
+_SCAN_EVERY_S = 30.0
+
+_LOCK = threading.Lock()
+_conn: sqlite3.Connection | None = None
+_fts_ok = True
+_last_scan = 0.0
+_vec_cache: dict[str, Any] = {"dirty": True, "ids": [], "mat": None}
+
+_FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
+_WIKILINK_RE = re.compile(r"\[\[([^\]|#\n]+)(?:[|#][^\]]*)?\]\]")
+_DOMAIN_PART_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 &+\-']{0,23}$")
+
+# The utility LLM is injected by main (same seam as the mission runtime) so
+# this module never imports main.
+_utility = None
+
+
+def init(utility_llm) -> None:
+    global _utility
+    _utility = utility_llm
+    VAULT_DIR.mkdir(parents=True, exist_ok=True)
+    (VAULT_DIR / _ASSETS).mkdir(exist_ok=True)
+
+
+# ── clean, readable notes (summarize long/raw extractions) ───────────────────
+_SUMMARY_TRIGGER = 2500     # only summarize sources longer than this
+_SUMMARY_MAX_SRC = 14000    # chars of source fed to the summarizer (MVP)
+
+
+async def _summarize_note(title: str, text: str) -> str:
+    """Turn a long/raw extraction into a clean English Markdown note.
+    Short inputs pass through unchanged. Longer ones are summarized on the
+    UTILITY lane, then the DISPATCH (OpenRouter) lane as a fallback — so
+    summarize-on-ingest works whenever the app has EITHER key, not just the
+    utility one. Never raises: if no summarizer is reachable it still returns
+    CLEAN markdown (a header + the raw extraction folded into a source block),
+    NEVER a raw truncated dump as the note body (fixes the 'garbage PDF node')."""
+    clean = (text or "").strip()
+    if not clean:
+        return f"_(empty document: {title})_"
+    if len(clean) <= _SUMMARY_TRIGGER:
+        return clean
+
+    summary = await _try_summarize(title, clean)
+    if summary:
+        return summary
+
+    # No summarizer available/failed -> still produce readable markdown. The
+    # summary can't be written, so lead with a one-liner and fold the raw
+    # extraction into a fenced source block (so the reader shows structure, not
+    # a wall of mixed-language raw text).
+    excerpt = clean[:6000] + ("\n\n…(truncated)" if len(clean) > 6000 else "")
+    return (f"**{title}** — imported document (no summarizer available; showing "
+            f"the extracted source).\n\n## Source (raw extraction)\n\n```\n{excerpt}\n```")
+
+
+async def _try_summarize(title: str, clean: str) -> str:
+    """Summarize on the utility lane, then the dispatch lane. Returns "" if
+    neither is reachable or both fail. Never raises."""
+    prompt = (
+        f"Summarize the document titled '{title}' into a clean, well-structured "
+        "Markdown note in ENGLISH. If the document repeats itself in other "
+        "languages (e.g. Chinese, Portuguese translations of the same content), "
+        "use ONLY the English content. Produce exactly:\n"
+        "- one sentence saying what it is\n"
+        "- a '## Key points' bullet list of the facts/specs that matter\n"
+        "- a '## Details' section ONLY for genuinely useful specifics\n"
+        "Be faithful — no invention. Under 400 words. No preamble, no code fence.\n\n"
+        f"DOCUMENT:\n{clean[:_SUMMARY_MAX_SRC]}"
+    )
+    # 1) injected utility lane (cheap; may be local CPU)
+    if _utility is not None:
+        try:
+            out = await _utility(prompt, temperature=0.1, max_tokens=900)
+            if out and out.strip():
+                return out.strip()
+        except Exception as e:
+            print(f"[vault] utility summarize failed (non-fatal): {e}", flush=True)
+    # 2) dispatch lane (OpenRouter) — works whenever a dispatch key is present
+    try:
+        from .providers import dispatch
+        provider = dispatch.get_provider()
+        if provider is not None:
+            model = dispatch.resolve_model("smart")
+            out = await provider.complete([{"role": "user", "content": prompt}],
+                                          model=model, temperature=0.1, max_tokens=900)
+            if out and out.strip():
+                return out.strip()
+    except Exception as e:
+        print(f"[vault] dispatch summarize failed (non-fatal): {e}", flush=True)
+    return ""
+
+
+# ── storage ──────────────────────────────────────────────────────────────────
+
+def _db() -> sqlite3.Connection:
+    global _conn, _fts_ok
+    if _conn is None:
+        _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+        _conn.execute("PRAGMA journal_mode=WAL")
+        _conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS nodes (
+                id TEXT PRIMARY KEY, slug TEXT UNIQUE NOT NULL,
+                title TEXT NOT NULL, rel_path TEXT UNIQUE NOT NULL,
+                domain TEXT NOT NULL, tags TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'note',
+                source_ref TEXT NOT NULL DEFAULT '',
+                created REAL NOT NULL, updated REAL NOT NULL,
+                mtime REAL NOT NULL, chars INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id TEXT NOT NULL, ord INTEGER NOT NULL,
+                text TEXT NOT NULL, vec BLOB
+            );
+            CREATE INDEX IF NOT EXISTS idx_chunks_node ON chunks(node_id);
+            CREATE TABLE IF NOT EXISTS edges (
+                src TEXT NOT NULL, dst TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'link',
+                PRIMARY KEY (src, dst, kind)
+            );
+            """
+        )
+        try:
+            _conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5"
+                "(text, node_id UNINDEXED, chunk_id UNINDEXED)"
+            )
+        except sqlite3.OperationalError:
+            _fts_ok = False  # keyword search degrades to LIKE
+        _conn.commit()
+    return _conn
+
+
+def _mark_dirty() -> None:
+    _vec_cache["dirty"] = True
+
+
+# ── markdown node format ─────────────────────────────────────────────────────
+
+def _slugify(title: str) -> str:
+    s = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
+    s = re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-").lower()
+    return s[:60] or "note"
+
+
+def _parse_note(text: str) -> tuple[dict[str, str], str]:
+    """(frontmatter dict, body). Tolerant: no frontmatter → empty meta."""
+    m = _FM_RE.match(text)
+    if not m:
+        return {}, text.strip()
+    meta: dict[str, str] = {}
+    for line in m.group(1).splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            meta[k.strip().lower()] = v.strip()
+    return meta, text[m.end():].strip()
+
+
+def _render_note(meta: dict[str, str], body: str) -> str:
+    lines = ["---"]
+    for k in ("id", "title", "domain", "tags", "source", "created", "updated"):
+        if meta.get(k):
+            lines.append(f"{k}: {meta[k]}")
+    lines.append("---\n")
+    return "\n".join(lines) + body.strip() + "\n"
+
+
+def _chunk_text(text: str) -> list[str]:
+    """Line-aware overlapping chunks (same approach the RAG lane proved)."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    out: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for line in text.split("\n"):
+        if cur_len + len(line) > _CHUNK_CHARS and cur:
+            block = "\n".join(cur).strip()
+            if block:
+                out.append(block)
+            keep: list[str] = []
+            klen = 0
+            for prev in reversed(cur):
+                if klen + len(prev) > _CHUNK_OVERLAP:
+                    break
+                keep.insert(0, prev)
+                klen += len(prev)
+            cur, cur_len = keep, klen
+        cur.append(line)
+        cur_len += len(line) + 1
+        while cur_len > 3 * _CHUNK_CHARS:  # single pathological line
+            block = "\n".join(cur)
+            out.append(block[:_CHUNK_CHARS])
+            rest = block[_CHUNK_CHARS - _CHUNK_OVERLAP:]
+            cur, cur_len = [rest], len(rest)
+    block = "\n".join(cur).strip()
+    if block:
+        out.append(block)
+    return out
+
+
+async def _embed(text: str) -> bytes | None:
+    try:
+        from reactor.memory.embed import embed_text
+        v = await embed_text(text)
+        n = float(np.linalg.norm(v))
+        if n <= 0:
+            return None
+        return (v / n).astype(np.float32).tobytes()
+    except Exception:
+        return None
+
+
+# ── indexing (files → SQLite) ────────────────────────────────────────────────
+
+def _domain_from_rel(rel: Path) -> list[str]:
+    parts = [p for p in rel.parts[:-1] if p and p != _ASSETS]
+    return list(parts[:3]) or ["Inbox"]
+
+
+async def _index_file(abs_path: Path) -> str | None:
+    """(Re)index one note file. Returns node id. Folders are authoritative
+    for domain (Obsidian moves must win); frontmatter carries identity."""
+    rel = abs_path.relative_to(VAULT_DIR)
+    try:
+        raw = abs_path.read_text("utf-8", errors="replace")
+    except Exception:
+        return None
+    meta, body = _parse_note(raw)
+    title = meta.get("title") or ""
+    if not title:
+        h = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
+        title = (h.group(1).strip() if h else abs_path.stem.replace("-", " "))[:120]
+    node_id = meta.get("id") or f"nd_{abs(hash(str(rel))) % 10**10:010d}"
+    slug = _slugify(meta.get("title") or abs_path.stem)
+    domain = _domain_from_rel(rel)
+    tags = [t.strip() for t in (meta.get("tags") or "").split(",") if t.strip()]
+    src = meta.get("source") or "note"
+    kind, _, ref = src.partition(":")
+    mtime = abs_path.stat().st_mtime
+    created = time.time()
+    try:
+        from datetime import datetime
+        if meta.get("created"):
+            created = datetime.fromisoformat(
+                meta["created"].replace("Z", "+00:00")).timestamp()
+    except Exception:
+        pass
+
+    chunks = _chunk_text(body)
+    vecs: list[bytes | None] = []
+    for ch in chunks:
+        vecs.append(await _embed(ch))
+
+    links = {_slugify(m) for m in _WIKILINK_RE.findall(body)}
+
+    with _LOCK:
+        db = _db()
+        db.execute("DELETE FROM chunks WHERE node_id=?", (node_id,))
+        if _fts_ok:
+            db.execute("DELETE FROM fts WHERE node_id=?", (node_id,))
+        db.execute("DELETE FROM edges WHERE src=?", (node_id,))
+        db.execute(
+            """INSERT INTO nodes (id, slug, title, rel_path, domain, tags,
+                                  source_kind, source_ref, created, updated,
+                                  mtime, chars)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(rel_path) DO UPDATE SET
+                   id=excluded.id, slug=excluded.slug, title=excluded.title,
+                   domain=excluded.domain, tags=excluded.tags,
+                   source_kind=excluded.source_kind, source_ref=excluded.source_ref,
+                   updated=excluded.updated, mtime=excluded.mtime,
+                   chars=excluded.chars""",
+            (node_id, slug, title, str(rel).replace("\\", "/"),
+             json.dumps(domain), json.dumps(tags), kind or "note", ref,
+             created, time.time(), mtime, len(body)),
+        )
+        for i, (ch, vb) in enumerate(zip(chunks, vecs)):
+            cur = db.execute(
+                "INSERT INTO chunks (node_id, ord, text, vec) VALUES (?,?,?,?)",
+                (node_id, i, ch, vb),
+            )
+            if _fts_ok:
+                db.execute("INSERT INTO fts (text, node_id, chunk_id) VALUES (?,?,?)",
+                           (ch, node_id, cur.lastrowid))
+        for target_slug in links:
+            row = db.execute("SELECT id FROM nodes WHERE slug=?",
+                             (target_slug,)).fetchone()
+            if row:
+                db.execute(
+                    "INSERT OR IGNORE INTO edges (src,dst,kind) VALUES (?,?,'link')",
+                    (node_id, row[0]),
+                )
+        db.commit()
+    _mark_dirty()
+    return node_id
+
+
+async def scan(force: bool = False) -> dict[str, int]:
+    """Reconcile vault files ↔ index by mtime. Cheap when nothing changed."""
+    global _last_scan
+    now = time.monotonic()
+    if not force and now - _last_scan < _SCAN_EVERY_S:
+        return {"scanned": 0, "indexed": 0, "removed": 0}
+    _last_scan = now
+    VAULT_DIR.mkdir(parents=True, exist_ok=True)
+    seen: set[str] = set()
+    indexed = 0
+    files = [p for p in VAULT_DIR.rglob("*.md")
+             if _ASSETS not in p.relative_to(VAULT_DIR).parts]
+    with _LOCK:
+        known = {r[0]: r[1] for r in
+                 _db().execute("SELECT rel_path, mtime FROM nodes").fetchall()}
+    for p in files:
+        rel = str(p.relative_to(VAULT_DIR)).replace("\\", "/")
+        seen.add(rel)
+        try:
+            if abs(known.get(rel, -1) - p.stat().st_mtime) > 1e-6:
+                if await _index_file(p) is not None:
+                    indexed += 1
+        except Exception as e:
+            print(f"[vault] index {rel}: {type(e).__name__}: {e}", flush=True)
+    removed = 0
+    with _LOCK:
+        db = _db()
+        for rel in set(known) - seen:
+            row = db.execute("SELECT id FROM nodes WHERE rel_path=?", (rel,)).fetchone()
+            if row:
+                nid = row[0]
+                db.execute("DELETE FROM chunks WHERE node_id=?", (nid,))
+                if _fts_ok:
+                    db.execute("DELETE FROM fts WHERE node_id=?", (nid,))
+                db.execute("DELETE FROM edges WHERE src=? OR dst=?", (nid, nid))
+                db.execute("DELETE FROM nodes WHERE id=?", (nid,))
+                removed += 1
+        db.commit()
+    if removed:
+        _mark_dirty()
+    return {"scanned": len(files), "indexed": indexed, "removed": removed}
+
+
+# ── categorization + creation ────────────────────────────────────────────────
+
+def _domain_tree(max_depth: int = 2) -> list[str]:
+    with _LOCK:
+        rows = _db().execute("SELECT domain FROM nodes").fetchall()
+    seen: dict[str, None] = {}
+    for (dj,) in rows:
+        try:
+            parts = json.loads(dj)[:max_depth]
+        except Exception:
+            continue
+        for i in range(len(parts)):
+            seen[" / ".join(parts[: i + 1])] = None
+    return sorted(seen)
+
+
+async def classify_domain(title: str, text: str,
+                          hint: list[str] | None = None) -> list[str]:
+    """Utility-LLM domain path, validated hard, biased to the existing tree.
+    Fallback: ['Inbox'] — never blocks an ingest."""
+    if hint:
+        clean = [h for h in hint[:3] if _DOMAIN_PART_RE.match(h or "")]
+        if clean:
+            return clean
+    if _utility is None:
+        return ["Inbox"]
+    tree = _domain_tree()
+    tree_txt = "\n".join(f"- {t}" for t in tree[:80]) or "- (empty)"
+    raw = await _utility(
+        "Categorize this note into a knowledge-tree path, 1-3 levels, "
+        "general→specific (e.g. [\"Computer Science\",\"Data Structures\","
+        "\"Arrays\"]). STRONGLY prefer extending an EXISTING branch:\n"
+        f"{tree_txt}\n\nTITLE: {title}\nNOTE (start):\n{text[:1500]}\n\n"
+        'Respond ONLY with a JSON array of 1-3 TitleCase strings, each <=24 chars.',
+        temperature=0.0, max_tokens=80,
+    )
+    try:
+        s = (raw or "").strip()
+        arr = json.loads(s[s.find("["): s.rfind("]") + 1])
+        parts = [str(p).strip() for p in arr][:3]
+        parts = [p for p in parts if _DOMAIN_PART_RE.match(p)]
+        if parts:
+            return parts
+    except Exception:
+        pass
+    return ["Inbox"]
+
+
+async def _related_slugs(text: str, exclude_node: str | None, k: int = _LINK_K) -> list[str]:
+    hits = await _vector_search(text[:2000], k * 3)
+    out: list[str] = []
+    seen: set[str] = set()
+    for h in hits:
+        if h["score"] < _LINK_THRESHOLD or h["node_id"] == exclude_node:
+            continue
+        if h["slug"] in seen:
+            continue
+        seen.add(h["slug"])
+        out.append(h["slug"])
+        if len(out) >= k:
+            break
+    return out
+
+
+async def write_node(*, title: str, body: str, domain: list[str] | None = None,
+                     tags: list[str] | None = None, source_kind: str = "note",
+                     source_ref: str = "") -> dict[str, Any]:
+    """Create a note: classify → place in the tree → auto-link → write file
+    → index. The learn-with-me entry point everything else calls."""
+    title = (title or "Untitled").strip()[:120]
+    body = (body or "").strip()
+    if not body:
+        raise HTTPException(status_code=422, detail="empty note body")
+    dom = domain or await classify_domain(title, body)
+    related = await _related_slugs(body, exclude_node=None)
+    if related:
+        body += "\n\n## Related\n" + "\n".join(f"- [[{s}]]" for s in related)
+
+    folder = VAULT_DIR.joinpath(*dom)
+    folder.mkdir(parents=True, exist_ok=True)
+    slug = base = _slugify(title)
+    i = 2
+    while (folder / f"{slug}.md").exists() or _slug_taken(slug):
+        slug = f"{base}-{i}"
+        i += 1
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    meta = {
+        "id": f"nd_{int(time.time()*1000) % 10**10:010d}",
+        "title": title,
+        "domain": " / ".join(dom),
+        "tags": ", ".join((tags or [])[:8]),
+        "source": f"{source_kind}:{source_ref}" if source_ref else source_kind,
+        "created": now_iso,
+    }
+    path = folder / f"{slug}.md"
+    path.write_text(_render_note(meta, body), "utf-8")
+    node_id = await _index_file(path)
+    return {"id": node_id, "slug": slug, "title": title, "domain": dom,
+            "rel_path": str(path.relative_to(VAULT_DIR)).replace("\\", "/"),
+            "linked": related}
+
+
+def _slug_taken(slug: str) -> bool:
+    with _LOCK:
+        return _db().execute("SELECT 1 FROM nodes WHERE slug=?",
+                             (slug,)).fetchone() is not None
+
+
+async def file_report(title: str, text: str, *, source_kind: str,
+                      source_ref: str = "") -> dict[str, Any] | None:
+    """Reports the OS generates land back as notes (the learn-with-me loop).
+    Soft-fails — a vault hiccup must never break the producing feature."""
+    try:
+        return await write_node(title=title, body=text,
+                                source_kind=source_kind, source_ref=source_ref)
+    except Exception as e:
+        print(f"[vault] file_report failed (non-fatal): {e}", flush=True)
+        return None
+
+
+# ── retrieval ────────────────────────────────────────────────────────────────
+
+def _vec_matrix() -> tuple[list[tuple[int, str]], Any]:
+    """(chunk meta, normalized matrix) — cached until the index changes."""
+    if not _vec_cache["dirty"] and _vec_cache["mat"] is not None:
+        return _vec_cache["ids"], _vec_cache["mat"]
+    with _LOCK:
+        rows = _db().execute(
+            "SELECT id, node_id, vec FROM chunks WHERE vec IS NOT NULL"
+        ).fetchall()
+    ids = [(r[0], r[1]) for r in rows]
+    mat = (np.frombuffer(b"".join(r[2] for r in rows), dtype=np.float32)
+           .reshape(len(rows), -1) if rows else None)
+    _vec_cache.update(ids=ids, mat=mat, dirty=False)
+    return ids, mat
+
+
+def _node_meta(node_ids: list[str]) -> dict[str, dict]:
+    if not node_ids:
+        return {}
+    q = ",".join("?" * len(node_ids))
+    with _LOCK:
+        rows = _db().execute(
+            f"SELECT id, slug, title, domain FROM nodes WHERE id IN ({q})",
+            node_ids,
+        ).fetchall()
+    return {r[0]: {"slug": r[1], "title": r[2], "domain": json.loads(r[3])}
+            for r in rows}
+
+
+async def _vector_search(query: str, k: int) -> list[dict]:
+    vb = await _embed(query)
+    if vb is None:
+        return []
+    ids, mat = _vec_matrix()
+    if mat is None or not len(ids):
+        return []
+    qv = np.frombuffer(vb, dtype=np.float32)
+    sims = mat @ qv
+    order = np.argsort(-sims)[:k]
+    metas = _node_meta(list({ids[i][1] for i in order}))
+    out = []
+    with _LOCK:
+        for i in order:
+            cid, nid = ids[i]
+            row = _db().execute("SELECT text FROM chunks WHERE id=?", (cid,)).fetchone()
+            m = metas.get(nid, {})
+            out.append({"chunk_id": cid, "node_id": nid, "score": float(sims[i]),
+                        "text": row[0] if row else "", **m})
+    return out
+
+
+def _keyword_search(query: str, k: int) -> list[dict]:
+    with _LOCK:
+        db = _db()
+        rows: list = []
+        if _fts_ok:
+            try:
+                safe = " ".join(re.findall(r"[\w']+", query)) or query
+                rows = db.execute(
+                    "SELECT chunk_id, node_id, text, bm25(fts) FROM fts "
+                    "WHERE fts MATCH ? ORDER BY bm25(fts) LIMIT ?",
+                    (safe, k),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+        if not rows:
+            like = f"%{query[:60]}%"
+            rows = [(r[0], r[1], r[2], 0.0) for r in db.execute(
+                "SELECT id, node_id, text, 0 FROM chunks WHERE text LIKE ? LIMIT ?",
+                (like, k),
+            ).fetchall()]
+    metas = _node_meta(list({r[1] for r in rows}))
+    return [{"chunk_id": r[0], "node_id": r[1], "text": r[2],
+             "score": 0.0, **metas.get(r[1], {})} for r in rows]
+
+
+async def retrieve(question: str, k: int = 8) -> list[dict]:
+    """Hybrid retrieval: vector + keyword fused by reciprocal rank, then
+    1-hop graph expansion from the top nodes."""
+    vec = await _vector_search(question, k * 2)
+    kw = _keyword_search(question, k)
+    fused: dict[int, dict] = {}
+    for rank, h in enumerate(vec):
+        f = fused.setdefault(h["chunk_id"], {**h, "rrf": 0.0})
+        f["rrf"] += 1.0 / (10 + rank)
+    for rank, h in enumerate(kw):
+        f = fused.setdefault(h["chunk_id"], {**h, "rrf": 0.0})
+        f["rrf"] += 0.8 / (10 + rank)
+    ranked = sorted(fused.values(), key=lambda h: -h["rrf"])[:k]
+
+    # 1-hop expansion: linked neighbors of the top nodes, lightly weighted.
+    top_nodes = list({h["node_id"] for h in ranked[:3]})
+    if top_nodes:
+        q = ",".join("?" * len(top_nodes))
+        with _LOCK:
+            nbrs = [r[0] for r in _db().execute(
+                f"SELECT DISTINCT dst FROM edges WHERE src IN ({q}) "
+                f"UNION SELECT DISTINCT src FROM edges WHERE dst IN ({q})",
+                top_nodes + top_nodes,
+            ).fetchall() if r[0] not in top_nodes][:4]
+        if nbrs:
+            metas = _node_meta(nbrs)
+            with _LOCK:
+                for nid in nbrs:
+                    row = _db().execute(
+                        "SELECT id, text FROM chunks WHERE node_id=? ORDER BY ord LIMIT 1",
+                        (nid,),
+                    ).fetchone()
+                    if row and all(h["chunk_id"] != row[0] for h in ranked):
+                        ranked.append({"chunk_id": row[0], "node_id": nid,
+                                       "text": row[1], "score": 0.0,
+                                       "rrf": 0.01, **metas.get(nid, {})})
+    return ranked[:k + 3]
+
+
+# ── endpoints ────────────────────────────────────────────────────────────────
+
+class IngestIn(BaseModel):
+    text: str | None = None
+    url: str | None = None
+    title: str | None = None
+    domain: list[str] | None = None
+    tags: list[str] | None = None
+
+
+@router.post("/ingest")
+async def vault_ingest(body: IngestIn) -> dict:
+    await scan()
+    if body.url:
+        # Routed through app.browse: SSRF-hardened fetch + real extraction.
+        # (Replaces a raw httpx.get + regex title + the retired rag helper.)
+        from .browse import _fetch  # noqa: PLC0415 — lazy, avoids an import cycle
+        page = await _fetch(body.url)
+        text = page.text
+        if not text.strip():
+            raise HTTPException(status_code=422, detail="no readable text at URL")
+        title = (body.title or page.title or body.url).strip()
+        summary = await _summarize_note(title[:120], text)
+        node = await write_node(title=title[:120], body=summary,
+                                domain=body.domain, tags=body.tags,
+                                source_kind="url", source_ref=body.url[:300])
+        return {"ok": True, "node": node}
+    if body.text and body.text.strip():
+        title = body.title or body.text.strip().splitlines()[0][:80]
+        node = await write_node(title=title, body=body.text.strip(),
+                                domain=body.domain, tags=body.tags,
+                                source_kind="text")
+        return {"ok": True, "node": node}
+    raise HTTPException(status_code=422, detail="provide text or url")
+
+
+_DOC_EXTS = {".md", ".txt", ".pdf", ".docx", ".xlsx", ".pptx"}
+_IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+_AUD_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".webm", ".flac"}
+
+
+@router.post("/ingest/file")
+async def vault_ingest_file(file: UploadFile = File(...)) -> dict:
+    await scan()
+    blob = await file.read()
+    if not blob:
+        raise HTTPException(status_code=422, detail="empty file")
+    if len(blob) > _MAX_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="file too large")
+    name = file.filename or "upload"
+    ext = Path(name).suffix.lower()
+    stem = Path(name).stem[:80]
+
+    if ext in _DOC_EXTS:
+        if ext in (".md", ".txt"):
+            text = blob.decode("utf-8", errors="replace")
+        else:
+            from . import files as files_mod
+            extractor = {".pdf": files_mod._extract_pdf,
+                         ".docx": files_mod._extract_docx,
+                         ".xlsx": files_mod._extract_xlsx,
+                         ".pptx": files_mod._extract_pptx}[ext]
+            try:
+                text, _meta = extractor(blob)
+            except Exception:
+                raise HTTPException(status_code=422,
+                                    detail=f"could not extract text from {ext}")
+        if not (text or "").strip():
+            # Scanned / image-only PDF ("No readable text") → OCR via the vision lane.
+            if ext == ".pdf":
+                try:
+                    from . import ocr as ocr_mod
+                    text = await ocr_mod.ocr_pdf(blob)
+                except Exception as e:
+                    print(f"[vault] ocr fallback failed: {e}", flush=True)
+            if not (text or "").strip():
+                raise HTTPException(status_code=422,
+                                    detail="no text in document (extraction + OCR found nothing)")
+        body = await _summarize_note(stem, text)
+        node = await write_node(title=stem, body=body,
+                                source_kind="file", source_ref=name[:200])
+        return {"ok": True, "node": node, "kind": "document"}
+
+    if ext in _IMG_EXTS:
+        asset_dir = VAULT_DIR / _ASSETS
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        asset = asset_dir / f"{_slugify(stem)}-{int(time.time())}{ext}"
+        asset.write_bytes(blob)
+        caption = await _caption_image(blob, ext)
+        body_md = (f"![[{_ASSETS}/{asset.name}]]\n\n{caption}"
+                   if caption else f"![[{_ASSETS}/{asset.name}]]\n\n(uncaptioned)")
+        node = await write_node(title=stem, body=body_md,
+                                source_kind="image", source_ref=asset.name)
+        return {"ok": True, "node": node, "kind": "image",
+                "captioned": bool(caption)}
+
+    if ext in _AUD_EXTS:
+        from .voice import transcribe_bytes
+        out = await transcribe_bytes(blob)  # raises honest 503 if STT absent
+        if not out["text"]:
+            raise HTTPException(status_code=422, detail="no speech detected")
+        node = await write_node(
+            title=f"{stem} (transcript)",
+            body=out["text"],
+            source_kind="audio", source_ref=name[:200],
+        )
+        return {"ok": True, "node": node, "kind": "audio"}
+
+    raise HTTPException(status_code=415,
+                        detail=f"unsupported type {ext or '(none)'} — "
+                               "md/txt/pdf/docx/xlsx/pptx/image/audio")
+
+
+async def _caption_image(blob: bytes, ext: str) -> str:
+    """Factual VLM caption via the dispatch lane (the eye's proven path).
+    No provider → honest empty caption, never a fabricated one."""
+    try:
+        import base64
+        from .providers import dispatch
+        provider = dispatch.get_provider()
+        if provider is None:
+            return ""
+        mime = "image/jpeg" if ext in (".jpg", ".jpeg") else f"image/{ext.lstrip('.')}"
+        data_url = f"data:{mime};base64," + base64.b64encode(blob).decode("ascii")
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text":
+                    "Describe this image factually for a knowledge archive: "
+                    "what it shows, any text it contains (transcribe exactly), "
+                    "diagrams/labels. No speculation, no style commentary. "
+                    "<=150 words."},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }]
+        model = dispatch.resolve_model("smart")
+        text = await provider.complete(messages, model=model,
+                                       temperature=0.1, max_tokens=300)
+        return (text or "").strip()
+    except Exception as e:
+        print(f"[vault] caption failed (non-fatal): {type(e).__name__}", flush=True)
+        return ""
+
+
+class QueryIn(BaseModel):
+    question: str
+    k: int = 8
+    model: str | None = None
+    synthesize: bool = True
+
+
+@router.post("/query")
+async def vault_query(body: QueryIn) -> dict:
+    await scan()
+    q = (body.question or "").strip()
+    if not q:
+        raise HTTPException(status_code=422, detail="empty question")
+    hits = await retrieve(q, max(2, min(16, body.k)))
+    sources = [{"node_id": h["node_id"], "slug": h.get("slug", ""),
+                "title": h.get("title", ""), "domain": h.get("domain", []),
+                "score": round(h.get("rrf", 0.0), 4)} for h in hits]
+    answer = ""
+    if body.synthesize and hits:
+        from .providers import chat as chat_registry
+        name, prov = chat_registry.provider_for_model(body.model or "")
+        if prov is not None:
+            blocks = "\n\n".join(
+                f"[[{h.get('slug','?')}]] ({h.get('title','')})\n{h['text'][:1200]}"
+                for h in hits
+            )
+            messages = [
+                {"role": "system", "content":
+                    "Answer from the user's own knowledge vault. Use ONLY the "
+                    "provided notes; cite as [[slug]] inline. If the notes "
+                    "don't cover it, say exactly what's missing — never fill "
+                    "gaps from general knowledge without flagging it."},
+                {"role": "user", "content": f"QUESTION: {q}\n\nNOTES:\n{blocks}"},
+            ]
+            try:
+                async for chunk in prov.stream(model=body.model or "",
+                                               messages=messages,
+                                               no_think=True, temperature=0.2):
+                    answer += chunk
+                from . import spend
+                spend.record(provider=name or "chat", model=body.model or "",
+                             in_tok=sum(len(m["content"]) for m in messages) // 4,
+                             out_tok=len(answer) // 4)
+            except Exception:
+                answer = ""  # sources still returned — honest degradation
+    return {"answer": answer.strip(), "sources": sources, "hits": len(hits)}
+
+
+@router.get("/tree")
+async def vault_tree() -> dict:
+    await scan()
+    with _LOCK:
+        rows = _db().execute(
+            "SELECT id, slug, title, domain, chars, updated FROM nodes "
+            "ORDER BY domain, title"
+        ).fetchall()
+    tree: dict[str, Any] = {}
+    for nid, slug, title, dj, chars, updated in rows:
+        parts = json.loads(dj)
+        cur = tree
+        for p in parts:
+            cur = cur.setdefault("children", {}).setdefault(p, {})
+        cur.setdefault("notes", []).append(
+            {"id": nid, "slug": slug, "title": title,
+             "chars": chars, "updated": updated})
+    return {"tree": tree.get("children", {}), "count": len(rows)}
+
+
+@router.get("/graph")
+async def vault_graph(limit: int = Query(1500, ge=10, le=5000)) -> dict:
+    await scan()
+    with _LOCK:
+        db = _db()
+        nodes = db.execute(
+            "SELECT id, slug, title, domain, chars FROM nodes "
+            "ORDER BY updated DESC LIMIT ?", (limit,),
+        ).fetchall()
+        ids = {n[0] for n in nodes}
+        edges = [
+            {"src": s, "dst": d, "kind": k}
+            for s, d, k in db.execute("SELECT src, dst, kind FROM edges").fetchall()
+            if s in ids and d in ids
+        ]
+    deg: dict[str, int] = {}
+    for e in edges:
+        deg[e["src"]] = deg.get(e["src"], 0) + 1
+        deg[e["dst"]] = deg.get(e["dst"], 0) + 1
+    return {
+        "nodes": [{"id": n[0], "slug": n[1], "title": n[2],
+                   "domain": json.loads(n[3]), "chars": n[4],
+                   "degree": deg.get(n[0], 0)} for n in nodes],
+        "edges": edges,
+    }
+
+
+@router.get("/node/{node_id}")
+async def vault_node(node_id: str) -> dict:
+    with _LOCK:
+        row = _db().execute(
+            "SELECT id, slug, title, rel_path, domain, tags, source_kind, "
+            "source_ref, created, updated FROM nodes WHERE id=? OR slug=?",
+            (node_id, node_id),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="unknown note")
+    path = VAULT_DIR / row[3]
+    try:
+        _meta, body = _parse_note(path.read_text("utf-8", errors="replace"))
+    except Exception:
+        raise HTTPException(status_code=404, detail="note file missing")
+    return {"id": row[0], "slug": row[1], "title": row[2], "rel_path": row[3],
+            "domain": json.loads(row[4]), "tags": json.loads(row[5]),
+            "source": {"kind": row[6], "ref": row[7]},
+            "created": row[8], "updated": row[9], "body": body}
+
+
+@router.get("/search")
+async def vault_search(q: str = Query(..., min_length=1, max_length=200),
+                       k: int = Query(10, ge=1, le=30)) -> dict:
+    await scan()
+    hits = await retrieve(q, k)
+    return {"items": [{"node_id": h["node_id"], "slug": h.get("slug", ""),
+                       "title": h.get("title", ""),
+                       "domain": h.get("domain", []),
+                       "snippet": h["text"][:240],
+                       "score": round(h.get("rrf", 0.0), 4)} for h in hits]}
+
+
+@router.get("/stats")
+async def vault_stats() -> dict:
+    await scan()
+    with _LOCK:
+        db = _db()
+        nodes, chars = db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(chars),0) FROM nodes").fetchone()
+        chunks = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        edges = db.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        domains = len({json.loads(r[0])[0] for r in
+                       db.execute("SELECT domain FROM nodes").fetchall()
+                       if json.loads(r[0])})
+    return {"nodes": nodes, "chunks": chunks, "edges": edges,
+            "domains": domains, "chars": chars,
+            "dir": str(VAULT_DIR)}
+
+
+@router.post("/reindex")
+async def vault_reindex() -> dict:
+    return await scan(force=True)
