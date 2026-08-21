@@ -95,7 +95,7 @@ const TILE_DEFS: TileDef[] = [
 
 const PERMANENT_IDS = new Set(["chat", "clock", "stocks", "news", "todo", "notes"]);
 // Singleton-but-opt-in: one instance, must be spawned, focus-on-reopen.
-const EPHEMERAL_OPENABLE = new Set(["docs", "summary", "research", "chain", "blueprint", "vault", "skills", "trader"]);
+const EPHEMERAL_OPENABLE = new Set(["docs", "summary", "research", "chain", "vault", "skills"]);
 
 // Multi-instance kinds (Chrome-tabs style): every + menu pick is a NEW
 // tile with a unique id and its own state. Keyed by KIND ("terminal",

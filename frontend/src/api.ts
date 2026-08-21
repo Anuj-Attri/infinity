@@ -1501,8 +1501,10 @@ export type WeatherData = {
   fetched_at: string;
 };
 
-export async function getWeather(city: string): Promise<WeatherData> {
-  const r = await apiFetch(`${BASE}/weather?city=${encodeURIComponent(city)}`);
+export async function getWeather(city: string, signal?: AbortSignal): Promise<WeatherData> {
+  // The signal matters: without it a slow response for a previous city can land
+  // after a newer one and overwrite it.
+  const r = await apiFetch(`${BASE}/weather?city=${encodeURIComponent(city)}`, { signal });
   if (!r.ok) {
     let detail = `weather ${r.status}`;
     try { const b = await r.json(); if (b?.detail) detail = String(b.detail); } catch {}
@@ -1518,124 +1520,6 @@ export async function getWeather(city: string): Promise<WeatherData> {
 // daily-briefing reader).
 
 // WMO weather codes -> readable condition (mirror of the backend's table).
-const WMO: Record<number, string> = {
-  0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
-  45: "Fog", 48: "Rime fog",
-  51: "Light drizzle", 53: "Drizzle", 55: "Dense drizzle",
-  56: "Freezing drizzle", 57: "Dense freezing drizzle",
-  61: "Light rain", 63: "Rain", 65: "Heavy rain",
-  66: "Freezing rain", 67: "Heavy freezing rain",
-  71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains",
-  80: "Light showers", 81: "Showers", 82: "Violent showers",
-  85: "Snow showers", 86: "Heavy snow showers",
-  95: "Thunderstorm", 96: "Thunderstorm w/ hail", 99: "Thunderstorm w/ heavy hail",
-};
-const wmoName = (code: unknown): string =>
-  typeof code === "number" && code in WMO ? WMO[code] : "Unknown";
-
-export async function getWeatherDirect(city: string, signal?: AbortSignal): Promise<WeatherData> {
-  // 1) geocode
-  const geoUrl = "https://geocoding-api.open-meteo.com/v1/search?" + new URLSearchParams({
-    name: city, count: "1", language: "en", format: "json",
-  });
-  const geoR = await fetch(geoUrl, { signal });
-  if (!geoR.ok) throw new Error(`Weather service unreachable (geocoding ${geoR.status})`);
-  const geo = await geoR.json();
-  const loc = (geo?.results ?? [])[0];
-  if (!loc) throw new Error(`City not found: ${city}`);
-
-  // 2) forecast
-  const fcUrl = "https://api.open-meteo.com/v1/forecast?" + new URLSearchParams({
-    latitude: String(loc.latitude), longitude: String(loc.longitude),
-    current: "temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m,apparent_temperature",
-    daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-    temperature_unit: "celsius", wind_speed_unit: "kmh",
-    timezone: "auto", forecast_days: "7",
-  });
-  const fcR = await fetch(fcUrl, { signal });
-  if (!fcR.ok) throw new Error(`Weather service unreachable (forecast ${fcR.status})`);
-  const fc = await fcR.json();
-  const cur = fc?.current ?? {};
-  const daily = fc?.daily ?? {};
-  const days: string[] = daily.time ?? [];
-
-  const numOrNull = (v: unknown): number | null => (typeof v === "number" ? v : null);
-  return {
-    city: loc.name ?? city,
-    country: loc.country ?? "",
-    region: loc.admin1 ?? "",
-    latitude: loc.latitude, longitude: loc.longitude,
-    timezone: fc?.timezone ?? "UTC",
-    current: {
-      temp_c: numOrNull(cur.temperature_2m),
-      feels_like_c: numOrNull(cur.apparent_temperature),
-      humidity_pct: numOrNull(cur.relative_humidity_2m),
-      wind_kmh: numOrNull(cur.wind_speed_10m),
-      condition: wmoName(cur.weather_code),
-      weather_code: numOrNull(cur.weather_code),
-    },
-    daily: days.slice(0, 7).map((date, i) => ({
-      date,
-      high_c: numOrNull((daily.temperature_2m_max ?? [])[i]),
-      low_c: numOrNull((daily.temperature_2m_min ?? [])[i]),
-      condition: wmoName((daily.weather_code ?? [])[i]),
-      precip_pct: numOrNull((daily.precipitation_probability_max ?? [])[i]),
-    })),
-    fetched_at: new Date().toISOString(),
-  };
-}
-
-// ── Weather fallback #2: wttr.in (keyless, global, CORS: * — verified) ──────
-// Different infrastructure from Open-Meteo, so one provider's outage doesn't
-// blank the tile. j1 gives current + 3 forecast days; mapped into the same
-// WeatherData shape (3 days < Open-Meteo's 7, the tile renders what exists).
-
-/* eslint-disable @typescript-eslint/no-explicit-any */
-export async function getWeatherWttr(city: string, signal?: AbortSignal): Promise<WeatherData> {
-  const r = await fetch(`https://wttr.in/${encodeURIComponent(city)}?format=j1`, { signal });
-  if (!r.ok) throw new Error(`Weather service unreachable (wttr ${r.status})`);
-  const d: any = await r.json();
-  const cur = d?.current_condition?.[0];
-  if (!cur) throw new Error(`City not found: ${city}`);
-  const area = d?.nearest_area?.[0] ?? {};
-  const num = (v: unknown): number | null => {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  };
-  const first = (x: any): string => String(x?.[0]?.value ?? "").trim();
-
-  return {
-    city: first(area.areaName) || city,
-    country: first(area.country),
-    region: first(area.region),
-    latitude: num(area.latitude) ?? 0,
-    longitude: num(area.longitude) ?? 0,
-    timezone: "local",
-    current: {
-      temp_c: num(cur.temp_C),
-      feels_like_c: num(cur.FeelsLikeC),
-      humidity_pct: num(cur.humidity),
-      wind_kmh: num(cur.windspeedKmph),
-      condition: first(cur.weatherDesc) || "Unknown",
-      weather_code: null,      // WWO codes ≠ WMO; the tile falls back to the condition text
-    },
-    daily: (d?.weather ?? []).map((w: any) => {
-      const hourly: any[] = w?.hourly ?? [];
-      const midday = hourly[Math.min(4, Math.max(0, hourly.length - 1))];
-      const precip = hourly.length
-        ? Math.max(...hourly.map((h) => num(h?.chanceofrain) ?? 0))
-        : null;
-      return {
-        date: String(w?.date ?? ""),
-        high_c: num(w?.maxtempC),
-        low_c: num(w?.mintempC),
-        condition: first(midday?.weatherDesc) || "Unknown",
-        precip_pct: precip,
-      };
-    }),
-    fetched_at: new Date().toISOString(),
-  };
-}
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 // ── Usage — per-provider summary ────────────────────────────────────────────

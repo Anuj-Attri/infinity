@@ -2,7 +2,7 @@
 // Nova can spawn this tile and set the city via edit_tile.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getWeather, getWeatherDirect, getWeatherWttr, type WeatherData } from "../../api";
+import { getWeather, type WeatherData } from "../../api";
 import { onTileWrite } from "../../state/tileActions";
 import TileGlyph from "../TileGlyph";
 
@@ -101,15 +101,20 @@ export default function WeatherTile() {
     setError(null);
     const c = city.trim();
 
-    // Provider chain — three independent live sources, then the last-good
-    // cache. Open-Meteo primary; wttr.in is DIFFERENT infrastructure (verified
-    // CORS: *) so one upstream's outage doesn't blank the tile; the backend
-    // hop covers webview-network oddities. "City not found" is a definitive
-    // answer, not an outage — it stops the chain immediately.
+    // ONE source: our backend, then the last-good cache.
+    //
+    // Mark 3 called Open-Meteo and wttr.in straight from the browser and only
+    // fell back to the backend. That was resilience for a local-first app whose
+    // backend might be switched off. Hosted, it is backwards: it hands the
+    // user's IP and city to two third parties from their own browser, the calls
+    // cannot be cached or rate-limited by us, and any Content-Security-Policy
+    // worth having blocks them. If our backend is down, nothing works anyway.
+    //
+    // Upstream redundancy belongs server-side, where it is one request from one
+    // address, not one per user. "City not found" is a definitive answer, not an
+    // outage — it stops the chain immediately.
     const sources: Array<() => Promise<WeatherData>> = [
-      () => getWeatherDirect(c, signal),
-      () => getWeatherWttr(c, signal),
-      () => getWeather(c),
+      () => getWeather(c, signal),
     ];
     for (const src of sources) {
       try {
@@ -220,7 +225,7 @@ export default function WeatherTile() {
                 <div className="weather-region">{data.region}{data.country ? `, ${data.country}` : ""}</div>
               )}
               <div className="weather-main-row">
-                {/* wttr.in data carries no WMO code → derive the emoji from the condition text */}
+                {/* Some sources carry no WMO code → derive the emoji from the condition text */}
                 <span className="weather-big-emoji">
                   {data.current.weather_code !== null
                     ? wmoEmoji(data.current.weather_code)

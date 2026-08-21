@@ -36,7 +36,7 @@ export default function TopToolbar() {
   // Filter the Tiles submenu by connector availability. Spotify only
   // appears once the OAuth flow has completed; before that it isn't a
   // dead tile in the list — it just isn't there. On the PHONE shell we also
-  // drop desktop-only kinds (browser/spotify/code/terminal/blueprint/detect)
+  // drop kinds that need a wide viewport (browser/code/terminal)
   // that don't render in the mobile feed/focus — detect has its own camera FAB.
   const onPhone = typeof document !== "undefined" && !!document.querySelector(".mobile-shell.is-phone");
   const availableTiles = TILE_REGISTRY.filter((t) => {
