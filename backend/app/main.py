@@ -220,6 +220,13 @@ async def _lifespan(application: FastAPI):
               f"env={w['environment'] or '-'} proxy={hosting.describe()}", flush=True)
         print(f"[boot] public door: {'SHUT (ACCESS_TOKEN set)' if is_locked() else 'NO TOKEN SET — non-loopback requests get 404'}",
               flush=True)
+        # Whether state survives a redeploy. Invisible otherwise, and the failure
+        # is silent: the app works perfectly, then forgets the master password on
+        # the next deploy and asks to be set up again as though it were new.
+        from .paths import data_dir, is_ephemeral
+        print(f"[boot] state: {data_dir()} "
+              f"({'EPHEMERAL — a redeploy wipes this, including the master password' if is_ephemeral() else 'persistent (DATA_DIR set)'})",
+              flush=True)
     except Exception as e:  # never let a log line stop the app booting
         print(f"[boot] environment banner unavailable: {e}", flush=True)
 

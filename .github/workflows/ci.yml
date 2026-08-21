@@ -199,6 +199,13 @@ jobs:
             || { echo "FAIL: door banner missing or not SHUT despite ACCESS_TOKEN being set."
                  docker logs api 2>&1 | grep -i door || true
                  exit 1; }
+          # Whether state survives a redeploy. This container runs without
+          # DATA_DIR, so it must say EPHEMERAL — if it ever claims persistence
+          # here, the check is reading something other than the real setting.
+          docker logs api 2>&1 | grep -E "^\[boot\] state: .*EPHEMERAL" \
+            || { echo "FAIL: state banner missing, or wrongly claims persistence with no DATA_DIR."
+                 docker logs api 2>&1 | grep -i "boot] state" || true
+                 exit 1; }
           # And it must never print the token it is reporting on.
           if docker logs api 2>&1 | grep -q "ci-door-key"; then
             echo "FAIL: the access token appears in the container logs."
