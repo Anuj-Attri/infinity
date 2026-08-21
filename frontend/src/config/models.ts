@@ -26,24 +26,22 @@ export type ModelDef = {
 // Sonnet 5: 1M context, intro $2/$10 per Mtok through 2026-08-31 (then 3/15).
 export const DEFAULT_ONLINE_MODEL_ID = "anthropic/claude-sonnet-5";
 
-// Auto (local-first) — the backend resolves this per turn: daily/easy turns
-// run on the LOCAL Gemma 4 12B GPU brain (zero cloud spend, on-demand
-// load/unload); hard/long/heavy-coding turns ride the API default above.
+// The routing sentinel. The backend resolves it per turn.
+//
+// It was labelled "Auto (local-first)" because a local Gemma brain took the
+// easy turns. There is no local lane in a hosted build, so that label described
+// behaviour that cannot happen. The sentinel stays — it is the seam a cheap /
+// strong split plugs into — but it no longer claims to be local.
 export const AUTO_MODEL_ID = "infinity/auto";
-// Local GPU brain (explicit pick — waits for the model load if cold).
-export const LOCAL_GEMMA_MODEL_ID = "local/gemma-4-12b";
 
-// Local CPU fallback tag (the Ollama model served CPU-only). Authoritative id
-// comes from /chat-providers/models (reactor/providers/ollama_local.py ::
-// DEFAULT_MODEL); this is only the pre-fetch placeholder.
-export const LOCAL_FALLBACK_MODEL_ID = "llama3.2:3b";
-
-// The app-wide default selection: local-first auto routing.
+// The app-wide default selection.
 export const DEFAULT_MODEL_ID = AUTO_MODEL_ID;
 
-// Retired ids — migrated to DEFAULT_MODEL_ID if found in a user's storage
-// (old local brains that no longer load on the GPU-free backend).
+// Retired ids — migrated to DEFAULT_MODEL_ID if found in a user's storage, so
+// an existing install does not sit pinned to a model that cannot answer.
 export const RETIRED_LOCAL_MODEL_IDS = [
+  "local/gemma-4-12b",
+  "llama3.2:3b",
   "qwen3:14b",
   "nemotron-local",
   "hf.co/bartowski/nvidia_NVIDIA-Nemotron-Nano-12B-v2-GGUF:Q6_K",
@@ -54,7 +52,7 @@ export const RETIRED_LOCAL_MODEL_IDS = [
 export const FALLBACK_MODELS: ModelDef[] = [
   {
     id: AUTO_MODEL_ID,
-    label: "Auto (local-first)",
+    label: "Auto",
     provider: "auto",
     supportsNoThink: false,
     available: true,
@@ -64,13 +62,6 @@ export const FALLBACK_MODELS: ModelDef[] = [
     label: "Claude Sonnet 5",
     provider: "openrouter",
     supportsNoThink: false,
-    available: true,
-  },
-  {
-    id: LOCAL_FALLBACK_MODEL_ID,
-    label: "Local fallback (CPU)",
-    provider: "local",
-    supportsNoThink: true,
     available: true,
   },
 ];
