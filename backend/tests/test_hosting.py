@@ -49,6 +49,45 @@ def test_an_empty_marker_is_not_a_marker(monkeypatch):
     assert hosting.on_railway() is False
 
 
+def test_where_reports_the_region_the_container_woke_up_in(monkeypatch):
+    """This readout is a measuring instrument, so it has to be trustworthy.
+
+    Railway's API accepts a region change and then reports `region: null`
+    forever, and the Deployment type has no region field at all. So the only way
+    to answer "did the move to us-east4 actually happen?" is to ask the running
+    container. If this ever silently returned None the answer would look like
+    "not on Railway" rather than "we do not know", which is the wrong failure.
+    """
+    monkeypatch.setenv("RAILWAY_PROJECT_ID", "p")
+    monkeypatch.setenv("RAILWAY_REPLICA_REGION", "us-east4-eqdc4a")
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT_NAME", "production")
+
+    w = hosting.where()
+    assert w["platform"] == "railway"
+    assert w["region"] == "us-east4-eqdc4a"
+    assert w["environment"] == "production"
+    assert w["behind_proxy"] is True
+
+
+def test_where_says_unknown_rather_than_guessing(monkeypatch):
+    """Off-platform, every field is None — not a plausible-looking default."""
+    w = hosting.where()
+    assert w["platform"] == "unknown"
+    assert w["region"] is None
+    assert w["replica"] is None
+    assert w["deployment"] is None
+
+
+def test_where_never_reports_a_secret(monkeypatch):
+    """It is rendered in the operator console, which gets screenshotted."""
+    monkeypatch.setenv("RAILWAY_PROJECT_ID", "p")
+    monkeypatch.setenv("ACCESS_TOKEN", "super-secret-door-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-secret")
+    blob = repr(hosting.where())
+    assert "super-secret-door-token" not in blob
+    assert "sk-or-secret" not in blob
+
+
 def test_a_request_cannot_talk_its_way_into_being_trusted(monkeypatch, tmp_path):
     """The whole point: headers are evidence a client controls, so they must not
     be able to switch on the trusting of headers."""

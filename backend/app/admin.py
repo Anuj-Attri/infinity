@@ -248,6 +248,7 @@ def _subsystems() -> list[Subsystem]:
 async def diagnostics() -> Diagnostics:
     """What is working, what is not, and the one thing that would fix each."""
     from . import auth as auth_layer
+    from . import hosting
 
     # Connectors — chat providers.
     try:
@@ -288,6 +289,10 @@ async def diagnostics() -> Diagnostics:
             # showing, because several behaviours differ by exactly this.
             "containerised": os.path.exists("/.dockerenv") or sys.platform.startswith("linux"),
             "started_at": time.time(),
+            # Where this replica actually is. Railway's API cannot be asked —
+            # see hosting.where() — so the container reporting its own region is
+            # the only way to confirm a region change landed.
+            "hosting": hosting.where(),
         },
         config=[
             ConfigItem(name=n, set=_is_set(n), enables=enables, required=req)

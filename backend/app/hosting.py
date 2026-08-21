@@ -49,6 +49,31 @@ def behind_proxy() -> bool:
     return on_railway()
 
 
+def where() -> dict[str, object]:
+    """Where this container actually woke up.
+
+    Railway's API will not answer this. `serviceInstance.region` reads back null
+    even immediately after a mutation setting it is accepted, and the deployment
+    type exposes no region at all — so "did the region change take?" cannot be
+    checked from the outside. RAILWAY_REPLICA_REGION is injected into the running
+    container, which makes this readout the verification instrument for a region
+    change rather than a decoration.
+    """
+
+    def _v(name: str) -> str | None:
+        return (os.environ.get(name) or "").strip() or None
+
+    return {
+        "platform": "railway" if on_railway() else "unknown",
+        "region": _v("RAILWAY_REPLICA_REGION"),
+        "replica": _v("RAILWAY_REPLICA_ID"),
+        "deployment": _v("RAILWAY_DEPLOYMENT_ID"),
+        "environment": _v("RAILWAY_ENVIRONMENT_NAME"),
+        "public_domain": _v("RAILWAY_PUBLIC_DOMAIN"),
+        "behind_proxy": behind_proxy(),
+    }
+
+
 def describe() -> str:
     """One line for the boot log and the operator console."""
     if (os.environ.get("TRUST_PROXY_HEADERS") or "").strip():
