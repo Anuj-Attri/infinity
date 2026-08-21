@@ -3095,9 +3095,6 @@ async def news(q: str | None = Query(default=None, max_length=120)) -> NewsOut:
     )
 
 
-# --- /quote -----------------------------------------------------------------
-
-
 # --- /summarize -------------------------------------------------------------
 # FIRST real generative-platform dispatch workflow (template for /image /video
 # /audio). The FRONTEND gathers source content LOCALLY (tile-read + RAG
