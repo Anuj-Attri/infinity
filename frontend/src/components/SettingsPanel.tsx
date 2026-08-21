@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from "react";
 import {
+  getBackendBase,
   getKeyStatus, listMemories, createMemory, updateMemory, deleteMemory,
   connectChatProvider, disconnectChatProvider,
   connectDispatchProvider, disconnectDispatchProvider, getDispatchProviderStatus,
@@ -490,7 +491,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
               <div className="about-version">v{typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.1.1"}</div>
               <div className="about-copyright">© 2026 Anuj Attri. All rights reserved.</div>
             </div>
-            <div className="settings-row"><span>Backend</span><span className="settings-row-meta">FastAPI · 127.0.0.1:8000</span></div>
+            <div className="settings-row"><span>Backend</span><span className="settings-row-meta">{getBackendBase()}</span></div>
             <div className="settings-row"><span>Default model</span><span className="settings-row-meta">OpenRouter · cloud</span></div>
           </section>
         </div>

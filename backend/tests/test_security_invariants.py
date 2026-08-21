@@ -57,6 +57,10 @@ PUBLIC_ROUTES: dict[str, str] = {
     "/auth/login":
         "Cannot require a session to create one. Rate limited to 10 per 15 "
         "minutes per IP, because bcrypt slows a guesser but does not stop one.",
+    "/access":
+        "Waitlist door. GET serves a page that reads a URL fragment and POSTs "
+        "it so ACCESS_TOKEN never appears in proxy query-string logs; sets only "
+        "the HttpOnly infinity_access cookie. No app state. See gatekeeper.",
     # Registered as routes ONLY when ENABLE_API_DOCS=1. Listed so that turning
     # docs on does not silently widen the surface without this test noticing.
     "/openapi.json": "Opt-in only (ENABLE_API_DOCS). Publishes the full API map.",

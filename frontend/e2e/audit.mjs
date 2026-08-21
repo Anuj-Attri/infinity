@@ -96,7 +96,7 @@ for (const [file, raw] of FILES) {
   // A hardcoded ROUTABLE host is how Mark 3 shipped a Tailscale IP that worked
   // for exactly one person, over plain http, which has no secure context.
   //
-  // Loopback is deliberately allowed: api.ts falls back to 127.0.0.1:8000 for
+  // Loopback is deliberately allowed: api.ts falls back to 127.0.0.1:8787 for
   // local development, which is correct and is not shipped anywhere. Flagging it
   // would make this rule cry wolf on the one legitimate case.
   for (const m of src.matchAll(/["'`]https?:\/\/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[^"'`]*/g)) {

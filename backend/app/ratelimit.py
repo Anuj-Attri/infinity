@@ -46,6 +46,9 @@ RULES: dict[str, Rule] = {
     # Credential guessing. Strict, and per-IP.
     "/auth/login": Rule(10, 900, "too many sign-in attempts"),
     "/auth/setup": Rule(5, 900, "too many setup attempts"),
+    # Waitlist door claim (POST body). Path limiter is a second belt; the
+    # gatekeeper's door_* counters are the one that covers every presentation.
+    "/access": Rule(40, 900, "too many requests"),
     # Costs money per call.
     "/chat": Rule(60, 60, "too many requests"),
     "/mission": Rule(20, 60, "too many requests"),
@@ -57,6 +60,13 @@ RULES: dict[str, Rule] = {
 }
 
 DEFAULT_RULE = Rule(240, 60, "too many requests")
+
+# Wrong ACCESS_TOKEN guesses. Counted separately from path rules because the
+# gatekeeper sits OUTSIDE this middleware and returns 404 without call_next —
+# so failed door checks would otherwise be unlimited. Response stays 404 (see
+# gatekeeper); this only caps how many misses an IP gets before lockout.
+DOOR_RULE = Rule(40, 900, "not found")
+DOOR_SCOPE = "door"
 
 # Never limited: the health check (a limiter that can 429 the healthcheck can
 # take the service down by itself) and CI's transport prober.
@@ -81,6 +91,36 @@ def client_key(request: Request) -> str:
         if first:
             return first
     return (request.client.host if request.client else "") or "unknown"
+
+
+def door_locked_out(request: Request) -> bool:
+    """True when this IP has burned its wrong-guess budget for the door.
+
+    Gatekeeper returns 404 either way — never 429 — so lockout does not confirm
+    that a door exists. Correct keys are also refused until the window slides;
+    that is deliberate: otherwise the budget does not actually cap guessing.
+    """
+    key = (DOOR_SCOPE, client_key(request))
+    now = time.monotonic()
+    with _LOCK:
+        b = _BUCKETS.get(key)
+        if not b:
+            return False
+        cutoff = now - DOOR_RULE.window_s
+        live = [t for t in b.hits if t > cutoff]
+        return len(live) >= DOOR_RULE.limit
+
+
+def record_door_failure(request: Request) -> None:
+    """One wrong ACCESS_TOKEN presentation (header, query, cookie, or /access)."""
+    key = (DOOR_SCOPE, client_key(request))
+    now = time.monotonic()
+    with _LOCK:
+        _sweep(now)
+        b = _BUCKETS.setdefault(key, _Bucket())
+        cutoff = now - DOOR_RULE.window_s
+        b.hits = [t for t in b.hits if t > cutoff]
+        b.hits.append(now)
 
 
 def _rule_for(path: str) -> tuple[str, Rule]:

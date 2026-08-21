@@ -6,13 +6,18 @@
 // talking to a hosted backend, so there is exactly one question: which origin?
 //
 //   VITE_API_BASE_URL   explicit, and what production always sets.
-//   (unset)             http://127.0.0.1:8000 — local dev against a local API.
+//   (unset)             http://127.0.0.1:8787 — local dev against a local API.
 //
 // The old fallback was a hardcoded Tailscale IP over plain http. That is gone
 // for three reasons: the tailnet is not part of this architecture any more; a
 // baked-in IP is not deployable; and a plain-http origin has no secure context,
 // which silently removes navigator.clipboard, getUserMedia and SpeechRecognition.
-const DEV_FALLBACK_URL = "http://127.0.0.1:8000";
+// 8787, NOT 8000. Mark 3 runs an always-on backend on 8000 via the
+// "InfinityBackend" scheduled task, and MARK4.md says Mark 3 stays running and
+// untouched. Sharing the port means whichever process bound first answers, so a
+// local test silently talks to the WRONG APP — which happened, and briefly
+// looked like a Mark 4 security bug.
+const DEV_FALLBACK_URL = "http://127.0.0.1:8787";
 
 function resolveBackendBase(): string {
   const configured = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();

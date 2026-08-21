@@ -76,6 +76,7 @@ _CONFIG_KEYS: list[tuple[str, str, bool]] = [
     ("SUPABASE_URL", "Auth and storage (M3+).", False),
     ("SUPABASE_SERVICE_ROLE_KEY", "Backend DB access. NOTE: bypasses RLS entirely.", False),
     ("VOYAGE_API_KEY", "Embeddings, and therefore Vault search and citations (M5).", False),
+    ("ACCESS_TOKEN", "Locks the WHOLE deployment behind a pre-shared key. Unset = anyone with the URL is in.", True),
     ("TRUST_PROXY_HEADERS", "Set to 1 ONLY behind a proxy (Railway/Cloudflare). Rate limiting counts the forwarded IP instead of the proxy's.", False),
     ("DATA_DIR", "Where state is written. Unset = the container's own disk, which a redeploy WIPES.", False),
     ("MARK4_DEV_ACCOUNT", "DEV ONLY. Must be unset in production — it makes every request resolve to one account.", False),
@@ -169,6 +170,23 @@ def _subsystems() -> list[Subsystem]:
                "Storage is the container's ephemeral disk, so it does not "
                "survive a redeploy. Live counts are on the Vault tile.",
         unblock="M5 for search; M4 moves storage to Postgres with owner columns.",
+    ))
+
+    # --- public reachability ------------------------------------------------
+    from .gatekeeper import is_locked
+    locked = is_locked()
+    out.append(Subsystem(
+        id="access", name="Public reachability",
+        status="ok" if locked else "blocked",
+        detail=("Locked. Every path except /health and /access returns 404 without "
+                "the access token, so the URL behaves as though nothing is there."
+                if locked else
+                "OPEN. Anyone with the URL reaches this app. There is no account "
+                "layer yet — state is shared process-wide and several routes "
+                "address resources by id without checking an owner."),
+        unblock=None if locked else
+                "Set ACCESS_TOKEN (waitlist link: /access#<token>). Remove it at "
+                "M3, when real accounts replace a shared secret.",
     ))
 
     # --- error reporting ----------------------------------------------------

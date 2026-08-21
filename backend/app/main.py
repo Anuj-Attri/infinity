@@ -60,12 +60,26 @@ if str(_BACKEND_ROOT) not in sys.path:
 # not be an error — hence the explicit is_file() check rather than relying on
 # load_dotenv's silent no-op, so the log says which branch was taken.
 _REPO_ROOT = Path(__file__).resolve().parents[2]        # <repo>  — .env, .data, .run
+import os  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
 
 _ENV_FILE = _REPO_ROOT / ".env"
-if _ENV_FILE.is_file():
+# Tests must not inherit the developer's .env. Reloading this module re-runs
+# load_dotenv, which put ACCESS_TOKEN (and TRUST_PROXY_HEADERS, and real API
+# keys) straight back after the test fixtures had deliberately cleared them —
+# so the gatekeeper locked the app and 19 tests failed with 404s that had
+# nothing to do with what they were testing. Worse, it would have let a test
+# make a real, billable API call because the developer happened to have a key.
+#
+# An explicit opt-out beats guessing at pytest internals, and it is one grep to
+# find. conftest.py sets it.
+_SKIP_DOTENV = os.environ.get("INFINITY_SKIP_DOTENV") == "1"
+
+if _ENV_FILE.is_file() and not _SKIP_DOTENV:
     load_dotenv(_ENV_FILE)
     print(f"[main] loaded {_ENV_FILE}", flush=True)
+elif _SKIP_DOTENV:
+    print("[main] INFINITY_SKIP_DOTENV=1 — using the process environment only", flush=True)
 else:
     print(f"[main] no {_ENV_FILE} — using the process environment (expected in a container)",
           flush=True)
@@ -104,6 +118,8 @@ from .mcp_api import router as mcp_router  # noqa: E402
 from .admin import router as admin_router  # noqa: E402
 from . import ratelimit  # noqa: E402
 from . import observability  # noqa: E402
+from . import gatekeeper  # noqa: E402
+from .gatekeeper import router as gatekeeper_router  # noqa: E402
 from . import mcp_client  # noqa: E402
 from .chat_providers     import router as chat_providers_router      # noqa: E402
 from .dispatch_providers import router as dispatch_providers_router  # noqa: E402
@@ -245,6 +261,10 @@ _AUTH_EXEMPT: frozenset[str] = frozenset({
     "/auth/status",
     "/auth/setup",
     "/auth/login",
+    # Waitlist door. Sets the infinity_access cookie from a fragment POST so the
+    # long-lived ACCESS_TOKEN never appears in proxy query-string logs. Serves
+    # no app state. See app.gatekeeper.
+    "/access",
     # Only registered as routes at all when ENABLE_API_DOCS=1 (see above), so
     # these are inert in a normal deployment. Listed so that turning docs on does
     # not also require remembering to exempt them.
@@ -315,6 +335,11 @@ app.add_middleware(
 # DSN is the normal state, not an error.
 observability.init()
 
+# The outermost layer. Starlette runs middleware in REVERSE registration order,
+# so registering last puts this first — ahead of CORS, the rate limiter and the
+# auth gate. A locked deployment should not disclose even its CORS policy.
+app.middleware("http")(gatekeeper.middleware)
+
 _BOOTED_AT = time.time()
 
 
@@ -376,6 +401,7 @@ browse_set_ingest(_browse_to_vault)
 app.include_router(mcp_router)
 # Operator diagnostics. Behind require_auth like everything not in _AUTH_EXEMPT.
 app.include_router(admin_router)
+app.include_router(gatekeeper_router)
 
 
 # /notify — earned-and-rare notification bus (the gate is the feature).
@@ -1730,6 +1756,10 @@ async def chat(body: ChatIn) -> ChatOut:
     matched; that lane is gone, so an unmatched model is a loud 503 rather than
     a silent downgrade to a different (weaker) model than the caller asked for."""
     msgs, _, _ = await _build_chat_messages(body)
+    if not body.model:
+        body.model = chat_provider_registry.AUTO_MODEL_ID
+    if body.model == chat_provider_registry.AUTO_MODEL_ID:
+        body.model = await _route_auto(body)
     premium_name, premium = chat_provider_registry.provider_for_model(body.model)
     if premium is None:
         print(f"[chat] no provider for model={body.model!r} — refusing", flush=True)
@@ -1764,6 +1794,14 @@ async def chat_stream(body: ChatIn) -> StreamingResponse:
         here. That's a separate registry and a separate endpoint.
     """
     t_req = time.monotonic()
+    # An omitted model means "you pick", not "fail". The UI always sends one, so
+    # this path is only reachable from the API directly — where the failure was
+    # a provider lookup on None, surfacing as the opaque "Model unavailable."
+    # That message is correct for a billing or quota problem and actively
+    # misleading for a request that simply did not name a model.
+    if not body.model:
+        body.model = chat_provider_registry.AUTO_MODEL_ID
+
     # AUTO: resolve the sentinel BEFORE provider lookup. The done line carries
     # the RESOLVED model so the client sees what actually answered.
     if body.model == chat_provider_registry.AUTO_MODEL_ID:

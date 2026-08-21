@@ -6,11 +6,11 @@ row ownership.
 ## Run
 
 ```bash
-# backend  →  http://127.0.0.1:8000
+# backend  →  http://127.0.0.1:8787   (8000 is Mark 3's always-on service)
 cd backend
 py -3.12 -m venv .venv && . .venv/Scripts/activate   # linux/mac: .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8787
 
 # frontend →  http://127.0.0.1:5173
 cd frontend && npm install && npm run dev
@@ -33,7 +33,7 @@ Streaming must be checked from a terminal — a browser `fetch` that awaits the
 whole body cannot tell a stream from a lump:
 
 ```bash
-curl -N -X POST localhost:8000/echo/stream -H 'content-type: application/json' -d '{}'
+curl -N -X POST localhost:8787/echo/stream -H 'content-type: application/json' -d '{}'
 ```
 
 Words arrive one at a time, or the transport is buffering.
