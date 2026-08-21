@@ -92,15 +92,19 @@ export default function CodeTile() {
   const active = tabs.find((t) => t.path === activePath) || null;
   const dirty = !!active && active.content !== active.original;
 
-  const openRoot = useCallback(async (raw: string) => {
-    const path = raw.trim();
-    if (!path) return;
+  // No path opens the workspace, which is the only place the backend will serve
+  // from. Asking the user for an absolute path made sense on the desktop build,
+  // where it was their own machine; hosted, there is exactly one directory and
+  // they have no way to know what it is called.
+  const openRoot = useCallback(async (raw?: string) => {
     setTreeError(null);
     try {
-      const body = await fsTree(path);
+      const body = await fsTree(raw?.trim() || undefined);
       setTree(body.tree as FsNode);
     } catch (e) { setTreeError(e instanceof Error ? e.message : String(e)); }
   }, []);
+
+  useEffect(() => { void openRoot(); }, [openRoot]);
 
   const openFile = useCallback(async (path: string) => {
     setSaveErr(null); setSaving("idle");
@@ -175,13 +179,13 @@ export default function CodeTile() {
       <div className="tile-body tcode-body no-drag" onMouseDown={(e) => e.stopPropagation()}>
         {!tree ? (
           <div className="tcode-empty">
-            <div className="tcode-empty-h">Open a folder</div>
-            <div className="tcode-empty-sub">Absolute path. Files open as tabs; Ctrl+S saves.</div>
+            <div className="tcode-empty-h">Workspace</div>
+            <div className="tcode-empty-sub">Files open as tabs; Ctrl+S saves.</div>
             <div className="tcode-empty-bar">
               <input type="text" className="tcode-input" value={rootInput}
                      onChange={(e) => setRootInput(e.target.value)}
                      onKeyDown={(e) => { if (e.key === "Enter") openRoot(rootInput); }}
-                     placeholder="e.g. C:\Code\reactor-mark-3" spellCheck={false} />
+                     placeholder="subfolder (optional)" spellCheck={false} />
               <button type="button" className="tcode-btn" onClick={() => openRoot(rootInput)}>Open</button>
             </div>
             {treeError && <div className="tcode-error">{treeError}</div>}

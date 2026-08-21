@@ -44,7 +44,19 @@ from .paths import data_path
 router = APIRouter(prefix="/vault", tags=["vault"])
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-VAULT_DIR = Path(os.environ.get("VAULT_DIR") or (_REPO_ROOT / "vault"))
+# The notes and their index MUST live on the same disk.
+#
+# This used to be `_REPO_ROOT / "vault"`, which is correct on a desktop where the
+# repo is permanent, and silently catastrophic in a container: the notes landed
+# on /srv (wiped by every redeploy) while _DB_PATH already pointed at the mounted
+# volume. After a deploy the directory scanned empty, the index still listed every
+# note, and scan() reconciled the difference by DELETING them — including
+# chunks.text, which is the last copy of the note bodies. Meanwhile the boot
+# banner and the operator console both reported storage as persistent.
+#
+# data_path() is the single answer to "where does state go"; nothing may compute
+# its own. docs/PORTING.md names this; skills_engine.py had the same bug once.
+VAULT_DIR = Path(os.environ.get("VAULT_DIR") or data_path("vault"))
 _ASSETS = "_assets"
 _DB_PATH = data_path("vault.db")
 
@@ -378,10 +390,28 @@ async def scan(force: bool = False) -> dict[str, int]:
                     indexed += 1
         except Exception as e:
             print(f"[vault] index {rel}: {type(e).__name__}: {e}", flush=True)
+    # REFUSE TO MASS-DELETE. Reconciliation assumes the directory is the truth,
+    # which holds only when the directory is really there. If VAULT_DIR points
+    # somewhere empty — an unmounted volume, a wrong path after a deploy, a
+    # renamed directory — then "every note was deleted" and "the disk is missing"
+    # look identical from here, and one of those readings destroys the corpus.
+    #
+    # So when the scan finds NOTHING but the index holds notes, treat it as a
+    # missing disk rather than a mass deletion. A user really emptying their
+    # vault loses nothing: the rows persist until a scan that can actually see
+    # the directory, and re-creating one file clears the condition.
+    missing = set(known) - seen
+    if missing and not files and known:
+        print(f"[vault] REFUSING to delete {len(missing)} indexed notes: "
+              f"{VAULT_DIR} scanned empty. This is what a missing or unmounted "
+              f"volume looks like, not an empty vault. Index left intact.",
+              flush=True)
+        return {"scanned": 0, "indexed": indexed, "removed": 0, "protected": len(missing)}
+
     removed = 0
     with _LOCK:
         db = _db()
-        for rel in set(known) - seen:
+        for rel in missing:
             row = db.execute("SELECT id FROM nodes WHERE rel_path=?", (rel,)).fetchone()
             if row:
                 nid = row[0]

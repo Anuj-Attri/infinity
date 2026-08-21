@@ -79,6 +79,8 @@ _CONFIG_KEYS: list[tuple[str, str, bool]] = [
     ("ACCESS_TOKEN", "The outermost door. UNSET means the service answers only /health to anything that is not loopback — inert, not open. Required for a deployment to be usable at all.", True),
     ("TRUST_PROXY_HEADERS", "Usually unnecessary — Railway is auto-detected from its injected variables. Set to 0 to force forwarded headers to be IGNORED.", False),
     ("DATA_DIR", "Where state is written. Unset = the container's own disk, which a redeploy WIPES.", False),
+    ("VAULT_DIR", "Override for where vault notes live. Unset is CORRECT — it then follows DATA_DIR, which is what keeps the notes on the same disk as their index.", False),
+    ("WORKSPACE_DIR", "Override for the Code tile's workspace. Unset is CORRECT — it follows DATA_DIR. Every /fs call is confined to this one directory.", False),
     ("MARK4_DEV_ACCOUNT", "DEV ONLY. Must be unset in production — it makes every request resolve to one account.", False),
     ("ALLOW_PLAINTEXT_KEYSTORE", "DEV ONLY. Lets provider keys be written unencrypted.", False),
 ]

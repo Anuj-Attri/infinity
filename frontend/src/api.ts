@@ -292,8 +292,13 @@ export async function ragIngest(name: string, text: string): Promise<{
 // tailnet on the packaged/phone builds). The Code tile previously used a raw
 // fetch() to a hardcoded 127.0.0.1, so once the auth gate landed every /fs call
 // 401'd → "Failed to fetch" in the WebView.
-export async function fsTree(path: string): Promise<{ tree: unknown }> {
-  const r = await apiFetch(`${BASE}/fs/tree?path=${encodeURIComponent(path)}`);
+// `path` is optional and omitting it lists the workspace root, which is the
+// normal case: the backend confines every /fs call to one workspace directory,
+// so there is no longer a root for the caller to choose. A path may still be
+// passed to list a subdirectory, and anything outside the workspace is refused.
+export async function fsTree(path?: string): Promise<{ root: string; tree: unknown }> {
+  const q = path ? `?path=${encodeURIComponent(path)}` : "";
+  const r = await apiFetch(`${BASE}/fs/tree${q}`);
   if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.detail || `tree ${r.status}`); }
   return r.json();
 }

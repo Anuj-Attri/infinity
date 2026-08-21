@@ -121,11 +121,94 @@ SHARED_MUTABLE_STATE: dict[str, str] = {
     "skills_engine.py":
         "_skills — NOT a leak: read-only built-in content, identical for every "
         "user. Listed so the scan stays exhaustive rather than selective.",
+
+    # ---- Found 2026-08-21, when the scanner stopped trusting CONSTANT_CASE ---
+    # All of these were always here. They were invisible because the scan
+    # exempted any name that was upper-case, and every one of them is.
+    "main.py":
+        "_WEATHER_CACHE/_STOCK_CACHE/_MOVERS_CACHE/_HIST_CACHE/_NEWS_CACHE are "
+        "keyed by city or ticker and hold public data, so a second tenant "
+        "sharing them is fine. _SEARCH_CACHE and _SUMMARY_CACHE are NOT: they "
+        "are keyed by the user's own query, so at M3 one account's search text "
+        "and results would be served to another account that happened to ask "
+        "the same thing. Those two need an account in the key.",
+    "providers/chat.py":
+        "_PROVIDERS holds LIVE provider instances, and an instance carries the "
+        "API key it was constructed with — so this is one set of credentials "
+        "for the whole process. Per-account OpenRouter keys (the M3 plan) "
+        "cannot work until this is keyed by account. _MODEL_CACHE is only the "
+        "fetched model list and is harmless to share.",
+    "ratelimit.py":
+        "_BUCKETS — deliberate and correct at one replica: the limiter must be "
+        "shared to mean anything. It is also exactly why numReplicas stays 1; "
+        "a second replica silently doubles every limit. Moves to Redis before "
+        "scaling out, not before.",
+    "mcp_client.py":
+        "_TOOLS_CACHE — per-server tool listings, not user data. Becomes a leak "
+        "only once servers are registered per-account rather than from config, "
+        "because then the cache key stops being globally meaningful.",
+    "mcp_stdio.py":
+        "_SESSIONS/_LOCKS/_FAILED_AT — subprocess bookkeeping for the stdio "
+        "hands, which are UNMOUNTED in Mark 4 (no local machine to run them "
+        "on). Dead in practice; kept because DIRECTION.md names this module the "
+        "template for the M8 LSP bridge, which will need per-account sessions.",
 }
 
 
+# Methods that change a container in place. Calling one of these on a
+# module-level name makes it shared state no matter what the name looks like.
+_MUTATING_METHODS = frozenset({
+    "add", "append", "extend", "update", "pop", "clear", "remove", "discard",
+    "insert", "setdefault", "popitem", "sort", "appendleft", "extendleft",
+})
+
+
+def _mutated_names(tree: ast.Module) -> set[str]:
+    """Module-level names that something in this module mutates in place."""
+    hit: set[str] = set()
+
+    def base(node) -> str:
+        """The root Name of `X`, `X[...]`, `X.attr` — '' if not a plain name."""
+        while isinstance(node, (ast.Subscript, ast.Attribute)):
+            node = node.value
+        return getattr(node, "id", "") if isinstance(node, ast.Name) else ""
+
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+            if n.func.attr in _MUTATING_METHODS:
+                name = base(n.func.value)
+                if name:
+                    hit.add(name)
+        elif isinstance(n, (ast.Assign, ast.AugAssign)):
+            targets = n.targets if isinstance(n, ast.Assign) else [n.target]
+            for t in targets:
+                if isinstance(t, ast.Subscript):   # X[k] = v  /  X[k] += v
+                    name = base(t)
+                    if name:
+                        hit.add(name)
+        elif isinstance(n, ast.Delete):
+            for t in n.targets:
+                if isinstance(t, ast.Subscript):   # del X[k]
+                    name = base(t)
+                    if name:
+                        hit.add(name)
+    return hit
+
+
 def _modules_with_shared_state() -> set[str]:
-    """Module-level mutable bindings that are not CONSTANT-cased."""
+    """Module-level mutable bindings, excluding ones never mutated.
+
+    CONSTANT_CASE used to be treated as proof of constness. It is a naming
+    convention, not a guarantee, and the difference was load-bearing: `fs.py`
+    held `_ROOTS: set[Path] = set()`, and `"_ROOTS".isupper()` is True, so the
+    scanner that calls itself exhaustive skipped a mutable set that every
+    request could add to — the same set that let `/fs/tree` hand out write
+    access to any directory it was named.
+
+    So case no longer exempts anything. What exempts a binding is that nothing
+    in its module ever mutates it, which is a property of the code rather than
+    of what someone called it.
+    """
     out: set[str] = set()
     for f in sorted(APP.rglob("*.py")):
         if "__pycache__" in f.parts:
@@ -134,6 +217,7 @@ def _modules_with_shared_state() -> set[str]:
             tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"))
         except SyntaxError:
             continue
+        mutated = _mutated_names(tree)
         for node in tree.body:
             targets = (node.targets if isinstance(node, ast.Assign)
                        else [node.target] if isinstance(node, ast.AnnAssign) else [])
@@ -149,7 +233,11 @@ def _modules_with_shared_state() -> set[str]:
                 continue
             for t in targets:
                 name = getattr(t, "id", "")
-                if name and not name.isupper():
+                if not name:
+                    continue
+                # Lower-case module-level mutables are shared state by
+                # convention; CONSTANT_CASE ones only if actually mutated.
+                if not name.isupper() or name in mutated:
                     out.add(f.relative_to(APP).as_posix())
     return out
 
