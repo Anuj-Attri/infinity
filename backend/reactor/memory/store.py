@@ -95,6 +95,15 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _active_model() -> str | None:
+    """Model id to stamp on vectors written now. None when unconfigured."""
+    try:
+        from app.providers.embeddings import active_model
+        return active_model()
+    except Exception:
+        return None
+
+
 def _decode_emb(blob: bytes | None) -> np.ndarray | None:
     if not blob:
         return None
@@ -115,6 +124,16 @@ class MemoryStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.executescript(SCHEMA)
+        # WHICH MODEL MADE THIS VECTOR.
+        #
+        # recall() already refuses to compare vectors of a different SHAPE, so a
+        # dimension change is safe. Two models at the SAME dimension are not:
+        # their vectors still dot cleanly and still produce a confident ranking,
+        # so an index holding both looks healthy and returns noise. Recording the
+        # model makes that case detectable instead of silent.
+        have = {r[1] for r in self._conn.execute("PRAGMA table_info(memories)").fetchall()}
+        if "embedding_model" not in have:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN embedding_model TEXT")
         self._conn.commit()
 
     # ── Memories ─────────────────────────────────────────────────────
@@ -134,14 +153,53 @@ class MemoryStore:
         ents = list(entities or [])
         self._conn.execute(
             "INSERT INTO memories (id, type, text, source, confidence, entities,"
-            " created_at, updated_at, embedding) VALUES (?,?,?,?,?,?,?,?,?)",
-            (mid, type, text, source, confidence, json.dumps(ents), now, now, _encode_emb(embedding)),
+            " created_at, updated_at, embedding, embedding_model)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (mid, type, text, source, confidence, json.dumps(ents), now, now,
+             _encode_emb(embedding), _active_model() if embedding is not None else None),
         )
         self._conn.commit()
         return Memory(
             id=mid, type=type, text=text, source=source, confidence=confidence,
             entities=ents, created_at=now, updated_at=now,
         )
+
+    def memories_needing_embedding(self, model: str | None, limit: int = 256) -> list[tuple[str, str]]:
+        """(id, text) for memories that have no usable vector for `model`.
+
+        Auto-captured facts are stored even when embedding fails — dropping a
+        fact the user stated is worse than storing it unsearchable. But nothing
+        ever went back for them, so every auto-fact captured before a provider
+        existed was permanently invisible to recall. This is what goes back.
+        """
+        rows = self._conn.execute(
+            "SELECT id, text FROM memories"
+            " WHERE embedding IS NULL OR embedding_model IS NOT ?"
+            " LIMIT ?",
+            (model, limit),
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    def set_embedding(self, mid: str, vec: np.ndarray, model: str | None) -> None:
+        """Attach a vector to an existing memory without touching updated_at.
+
+        Backfilling is not an edit the user made; bumping updated_at would
+        reshuffle every "recent memories" view for a purely internal operation.
+        """
+        self._conn.execute(
+            "UPDATE memories SET embedding=?, embedding_model=? WHERE id=?",
+            (_encode_emb(vec), model, mid),
+        )
+        self._conn.commit()
+
+    def embedding_coverage(self, model: str | None) -> dict:
+        """How much of the memory store is actually recallable by meaning."""
+        total = self._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        usable = self._conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL AND embedding_model IS ?",
+            (model,),
+        ).fetchone()[0]
+        return {"total": total, "usable": usable, "needing_backfill": total - usable}
 
     def update_memory(
         self,
@@ -165,8 +223,14 @@ class MemoryStore:
         new_emb_blob = _encode_emb(embedding) if embedding is not None else cur["embedding"]
         now = _now_ms()
         self._conn.execute(
-            "UPDATE memories SET text=?, type=?, confidence=?, entities=?, updated_at=?, embedding=? WHERE id=?",
-            (new_text, new_type, new_conf, json.dumps(new_ents), now, new_emb_blob, mid),
+            "UPDATE memories SET text=?, type=?, confidence=?, entities=?, updated_at=?, embedding=?,"
+            " embedding_model=COALESCE(?, embedding_model) WHERE id=?",
+            (new_text, new_type, new_conf, json.dumps(new_ents), now, new_emb_blob,
+             # Only re-stamp when a NEW vector was supplied; COALESCE keeps the
+             # existing stamp otherwise, so editing an unrelated field does not
+             # relabel a vector that was made by a different model.
+             _active_model() if embedding is not None else None,
+             mid),
         )
         self._conn.commit()
         return Memory(
@@ -206,17 +270,27 @@ class MemoryStore:
         Optional `type_filter` restricts to a single memory type."""
         if type_filter is None:
             rows = self._conn.execute(
-                "SELECT id, type, text, source, confidence, entities, created_at, updated_at, embedding"
+                "SELECT id, type, text, source, confidence, entities, created_at, updated_at, embedding,"
+                " embedding_model"
                 " FROM memories"
             ).fetchall()
         else:
             rows = self._conn.execute(
-                "SELECT id, type, text, source, confidence, entities, created_at, updated_at, embedding"
+                "SELECT id, type, text, source, confidence, entities, created_at, updated_at, embedding,"
+                " embedding_model"
                 " FROM memories WHERE type = ?",
                 (type_filter,),
             ).fetchall()
+        # Only vectors made by the ACTIVE model are comparable. The shape check
+        # below catches a dimension change; it cannot catch two models at the
+        # same dimension, whose vectors dot cleanly and rank confidently while
+        # meaning nothing. Rows written before this column existed have a NULL
+        # stamp and are skipped rather than trusted.
+        active = _active_model()
         out: list[Memory] = []
         for r in rows:
+            if active is not None and r[9] != active:
+                continue
             emb = _decode_emb(r[8])
             if emb is None or emb.shape != query_vec.shape:
                 continue

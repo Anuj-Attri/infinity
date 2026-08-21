@@ -1212,7 +1212,11 @@ async def _build_chat_messages(body: ChatIn) -> tuple[list[dict], list[Memory], 
     # session-overview grounding retrieval below.
     qvec = None
     try:
-        qvec = await embed_text(body.message)
+        # "query", not "document". Voyage embeds a question differently from the
+        # text it is searching, and the stored side (session_overview) indexes as
+        # "document" — so embedding the query as a document too puts both sides
+        # in the wrong space at once, which degrades recall without failing.
+        qvec = await embed_text(body.message, input_type="query")
     except EmbedError:
         qvec = None
 
@@ -2517,6 +2521,54 @@ async def memory_list() -> dict:
     return {"items": [m.to_dict() for m in items]}
 
 
+@app.get("/memory/embeddings/status")
+async def memory_embeddings_status() -> dict:
+    """How much of the memory store is recallable by meaning, not just listed.
+
+    "Embeddings are on" and "your memories are embedded" are different facts.
+    Auto-captured facts are stored even when embedding fails, so the gap between
+    them is real and was invisible.
+    """
+    from .providers.embeddings import active_model, status
+    cov = await asyncio.to_thread(MEMORY.embedding_coverage, active_model())
+    return {"provider": status(), **cov,
+            "hint": None if cov["needing_backfill"] == 0 else
+                    "POST /memory/reindex to embed the rest"}
+
+
+@app.post("/memory/reindex")
+async def memory_reindex() -> dict:
+    """Embed every memory that has no usable vector.
+
+    Nothing else does this. Memories written while no provider was configured —
+    and every auto-captured fact whose embedding failed — keep a NULL vector
+    forever, so they are listed but never recalled.
+    """
+    from .providers.embeddings import EmbedError, active_model, embed_texts
+
+    model = active_model()
+    if not model:
+        raise HTTPException(status_code=503,
+                            detail="no embedding provider configured; set VOYAGE_API_KEY first")
+
+    done = 0
+    while True:
+        batch = await asyncio.to_thread(MEMORY.memories_needing_embedding, model, 128)
+        batch = [(mid, t) for mid, t in batch if (t or "").strip()]
+        if not batch:
+            break
+        try:
+            vecs = await embed_texts([t for _, t in batch], input_type="document")
+        except EmbedError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        for (mid, _), v in zip(batch, vecs):
+            await asyncio.to_thread(MEMORY.set_embedding, mid, v, model)
+        done += len(batch)
+        if len(batch) < 128:
+            break
+    return {"embedded": done, "model": model}
+
+
 @app.post("/memory")
 async def memory_create(body: MemoryIn) -> dict:
     if body.type not in ("profile", "episodic"):
@@ -2566,7 +2618,7 @@ async def memory_delete(mid: str) -> dict:
 @app.post("/memory/search")
 async def memory_search(body: MemorySearchIn) -> dict:
     try:
-        qvec = await embed_text(body.query)
+        qvec = await embed_text(body.query, input_type="query")
     except EmbedError as e:
         raise HTTPException(status_code=503, detail=str(e))
     hits = await asyncio.to_thread(MEMORY.search_memories, qvec, body.limit, 0.4)

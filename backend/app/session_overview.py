@@ -33,14 +33,26 @@ async def set_overview(text: str) -> int:
     a total failure leaves the slot empty (chat just runs ungrounded)."""
     global _CHUNKS
     pieces = _chunk(text or "")
-    built: list[dict] = []
-    for p in pieces:
-        try:
-            vec = await embed_text(p)
-        except Exception:
-            continue
-        built.append({"text": p, "vec": vec})
-    _CHUNKS = built          # atomic overwrite of the single slot
+    if not pieces:
+        _CHUNKS = []
+        return 0
+
+    # ONE request for the whole overview, not one per chunk. This loop used to
+    # make a separate HTTPS round trip per piece — up to MAX_CHUNKS (400) of
+    # them, serially, while the user waited. The provider takes a batch.
+    #
+    # The failure semantics change and it is the right trade: previously a
+    # single unembeddable chunk was skipped and the rest survived; now the batch
+    # is all-or-nothing. Losing one chunk of an overview silently is worse than
+    # running ungrounded, which is a state the caller already handles — and a
+    # partial overview is the kind of quiet degradation that gets believed.
+    from .providers.embeddings import EmbedError, embed_texts
+    try:
+        vecs = await embed_texts(pieces, input_type="document")
+    except EmbedError:
+        _CHUNKS = []          # chat runs ungrounded, as before
+        return 0
+    _CHUNKS = [{"text": p, "vec": v} for p, v in zip(pieces, vecs)]
     return len(_CHUNKS)
 
 

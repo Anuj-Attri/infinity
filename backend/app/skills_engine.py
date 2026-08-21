@@ -196,7 +196,7 @@ async def match(message: str) -> list[Skill]:
         if semantic_pool and len(keyword_hits) < MAX_ACTIVE:
             try:
                 from reactor.memory.embed import embed_text
-                qv = await embed_text(msg[:1000])
+                qv = await embed_text(msg[:1000], input_type="query")
                 qn = float(np.linalg.norm(qv))
                 if qn > 0:
                     qv = qv / qn

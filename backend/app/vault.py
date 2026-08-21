@@ -323,6 +323,43 @@ async def _embed(text: str, *, input_type: str = "document") -> bytes | None:
         return None
 
 
+async def _embed_many(texts: list[str]) -> list[bytes | None]:
+    """Vector bytes for a whole note, in ONE request. None for every chunk if
+    embeddings are unavailable.
+
+    Indexing used to call _embed() per chunk, so writing one note meant a
+    separate HTTPS round trip (and TLS handshake) per chunk, serially — paid
+    again for every changed file on every scan(). The provider takes batches;
+    this is the difference between one request and dozens.
+
+    Empty chunks are held out rather than sent: the provider refuses an empty
+    string, and one blank chunk must not cost the note its entire index.
+    """
+    global _embed_warned
+    if not texts:
+        return []
+    idx = [i for i, t in enumerate(texts) if (t or "").strip()]
+    if not idx:
+        return [None] * len(texts)
+
+    from .providers.embeddings import EmbedError, embed_texts
+    try:
+        vecs = await embed_texts([texts[i].strip() for i in idx], input_type="document")
+    except Exception as e:
+        if not _embed_warned:
+            _embed_warned = True
+            print(f"[vault] embeddings unavailable, chunks are being stored "
+                  f"WITHOUT vectors — search falls back to full text. "
+                  f"Run /vault/reindex once a provider is configured. ({e})",
+                  flush=True)
+        return [None] * len(texts)
+
+    out: list[bytes | None] = [None] * len(texts)
+    for i, v in zip(idx, vecs):
+        out[i] = v.astype(np.float32).tobytes()
+    return out
+
+
 # ── indexing (files → SQLite) ────────────────────────────────────────────────
 
 def _domain_from_rel(rel: Path) -> list[str]:
@@ -360,9 +397,7 @@ async def _index_file(abs_path: Path) -> str | None:
         pass
 
     chunks = _chunk_text(body)
-    vecs: list[bytes | None] = []
-    for ch in chunks:
-        vecs.append(await _embed(ch))
+    vecs = await _embed_many(chunks)
 
     links = {_slugify(m) for m in _WIKILINK_RE.findall(body)}
 

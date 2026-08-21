@@ -211,3 +211,47 @@ def test_backfill_re_embeds_rows_from_a_previous_model(vault, monkeypatch):
     assert out["embedded"] >= 1
     assert all(r[2] == "voyage-4" for r in chunk_rows(vault))
     assert len(vault._vec_matrix()[0]) >= 1
+
+
+# ── batching ─────────────────────────────────────────────────────────────────
+
+def test_indexing_a_note_makes_ONE_embedding_request(vault, monkeypatch):
+    """Not one per chunk.
+
+    Indexing used to call the provider once per chunk, serially, each with its
+    own TLS handshake — and paid it again for every changed file on every scan.
+    Nothing about the output differs, so this can regress silently; only a call
+    count catches it.
+    """
+    from app.providers import embeddings as E
+    calls = {"n": 0, "sizes": []}
+
+    async def _batch(texts, *, input_type="document"):
+        calls["n"] += 1
+        calls["sizes"].append(len(texts))
+        return [np.eye(1024, dtype=np.float32)[i % 1024] for i in range(len(texts))]
+
+    monkeypatch.setattr(E, "_key", lambda: "k")
+    monkeypatch.setattr(E, "embed_texts", _batch)
+
+    # A body long enough to chunk into several pieces.
+    note(vault, "long.md", ("paragraph about vectors. " * 120 + "\n\n") * 4)
+    asyncio.run(vault.scan(force=True))
+
+    assert calls["n"] == 1, f"expected 1 batched request, made {calls['n']}"
+    assert calls["sizes"][0] > 1, "the note did not actually chunk; test is vacuous"
+
+
+def test_a_blank_chunk_does_not_cost_the_note_its_index(vault, monkeypatch):
+    """The provider refuses empty strings; one blank must not fail the batch."""
+    from app.providers import embeddings as E
+    monkeypatch.setattr(E, "_key", lambda: "k")
+
+    async def _batch(texts, *, input_type="document"):
+        assert all(t.strip() for t in texts), "an empty string reached the provider"
+        return [np.eye(1024, dtype=np.float32)[0] for _ in texts]
+    monkeypatch.setattr(E, "embed_texts", _batch)
+
+    out = asyncio.run(vault._embed_many(["real text", "   ", "more text"]))
+    assert out[0] is not None and out[2] is not None
+    assert out[1] is None, "a blank chunk was given a vector"
