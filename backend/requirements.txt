@@ -1,12 +1,51 @@
-# M0 — the skeleton only. Add a dependency when the milestone that needs it
-# lands, not in anticipation.
+# Runtime deps for the lifted backend.
+#
+# Three of these were NEVER DECLARED in Mark 3 and were only present because
+# they happened to be in the dev venv. In a clean container the modules that
+# import them fail at request time, not at build time:
+#   beautifulsoup4 + lxml -> browse.py (a MOUNTED route)
+#   PyMuPDF / Pillow      -> ocr.py    (the scanned-PDF fallback for ingestion)
+# That is exactly the class of silent failure this project keeps paying for.
+
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 python-dotenv==1.0.1
 httpx==0.28.1
 
-# M1+ (uncomment as milestones land)
+# Auth (master password, replaced by Supabase Auth at M3)
+bcrypt>=4.0
+
+# Uploads
+python-multipart>=0.0.9
+
+# Document extraction — files.py
+pdfplumber>=0.11
+pypdf>=4.0
+python-docx>=1.1
+openpyxl>=3.1
+python-pptx>=0.6
+
+# Server-side browsing — browse.py. UNDECLARED IN MARK 3.
+beautifulsoup4>=4.12
+lxml>=5.0
+
+# Scanned-PDF OCR fallback — ocr.py. UNDECLARED IN MARK 3.
+# VLM-based (renders pages, asks the vision model). No tesseract binary needed.
+PyMuPDF>=1.24
+Pillow>=10.0
+
+# Vault similarity maths
+numpy>=1.24
+
+# Market data — the manual portfolio tracker
+yfinance>=0.2.40
+
+# Accurate token accounting for the context budget. context_budget.py falls
+# back to chars//4 without it, which silently mis-budgets long contexts.
+tiktoken>=0.8
+
+# M3+ (uncomment as milestones land)
 # supabase==2.11.0
 # asyncpg==0.30.0
 # pgvector==0.3.6

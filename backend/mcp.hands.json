@@ -1,0 +1,26 @@
+{
+  "_comment": "Built-in MCP hands, seeded into the registry at startup. Edit + restart to change.",
+
+  "_why_no_stdio_hands": [
+    "Mark 3 shipped two stdio hands — a filesystem server rooted at C:\\Users\\user",
+    "and C:\\Code, and Playwright driving msedge. Both spawned a subprocess on the",
+    "machine running the backend. On a single-user desktop that machine was the",
+    "user's own, so 'the filesystem hand can read your files' was the feature.",
+    "",
+    "Hosted, that same code reads OUR container's filesystem, shared by every",
+    "tenant, and hands a model process execution on the server. The paths were",
+    "Windows-only and msedge does not exist on Linux, so they would fail — but",
+    "failing is not the same as being safe, and they must not come back by",
+    "accident. Remote HTTP MCP servers are the supported path: they run on",
+    "someone else's machine, under the same consent gate.",
+    "",
+    "mcp_stdio.py is kept and unmounted. DIRECTION names it the template for the",
+    "LSP bridge — the same async JSON-RPC shape with Content-Length framing."
+  ],
+
+  "self": {
+    "name": "App",
+    "transport": "internal",
+    "module": "self"
+  }
+}
