@@ -97,7 +97,7 @@ export default function McpConnectors() {
               <span className="mcp-server-meta">{s.trusted ? `${s.exposed} exposed` : `${(preview[s.id] ?? []).length} tools`}{s.has_auth ? " · auth" : ""}</span>
               <button type="button" className="mcp-x" onClick={() => remove(s.id)}>Remove</button>
             </div>
-            <div className="mcp-server-url">{s.url}{s.insecure && <span className="mcp-insecure"> · ⚠ insecure http (external)</span>}</div>
+            <div className="mcp-server-url">{s.url}{s.insecure && <span className="mcp-insecure"> · ⚠ not https</span>}</div>
             <div className="mcp-tools">
               {toolsFor(s).map((t) => (
                 <div key={t.name} className="mcp-tool">

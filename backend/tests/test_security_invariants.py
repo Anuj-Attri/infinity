@@ -167,14 +167,14 @@ def _strip_comments_and_strings(src: str) -> str:
 def test_no_silently_swallowed_exceptions_are_added():
     """`except: pass` is how a failure becomes invisible.
 
-    The lift brought 33 of these across. They are grandfathered BY COUNT so the
-    number can only go DOWN — a new one fails this test, and paying one off
-    should be followed by lowering this number so it cannot come back.
+    The lift brought 33 of these across; 31 remain. They are grandfathered BY
+    COUNT so the number can only go DOWN — a new one fails this test, and paying
+    one off is followed by lowering this number so it cannot come back.
 
     Not a nice-to-have: nearly every entry in the landmine ledger is a failure
     that was invisible because something swallowed it.
     """
-    GRANDFATHERED = 33
+    GRANDFATHERED = 31
     found: list[str] = []
     for f, src in _iter_sources():
         try:

@@ -114,33 +114,28 @@ def set_enabled(on: bool) -> None:
 # ── transport-trust + injection sanitising ───────────────────────────────────
 
 def is_insecure(url: str) -> bool:
-    """True for EXTERNAL plain-http URLs. http to localhost / RFC1918 / tailnet
-    (100.64-127.x, *.ts.net) is fine; external http is flagged insecure."""
+    """True for any MCP URL that is not https.
+
+    This USED to answer a different question. In Mark 3 the app lived on a
+    tailnet, so plain http to localhost, RFC1918 or 100.64-127.x was the normal
+    case and was reported as fine; only EXTERNAL http was flagged. Every one of
+    those addresses is now REFUSED outright by browse._assert_safe_url, which
+    _rpc calls before any request — so the old answer is not merely stale, it
+    contradicts what the server actually does.
+
+    Two functions disagreeing about the same URL is how the next person reaches
+    for the friendlier one. The name invites being mistaken for a security
+    check, so it now gives the conservative answer and says who the real gate is.
+
+    NOT the SSRF gate. That is browse._assert_safe_url. This only drives a UI
+    warning badge.
+    """
     from urllib.parse import urlparse
     try:
         u = urlparse(url)
     except Exception:
-        return True
-    if u.scheme == "https":
-        return False
-    host = (u.hostname or "").lower()
-    if host in ("localhost", "127.0.0.1", "::1") or host.endswith(".ts.net"):
-        return False
-    if host.startswith(("10.", "192.168.")):
-        return False
-    if host.startswith("100."):
-        try:
-            if 64 <= int(host.split(".")[1]) <= 127:   # tailnet CGNAT range
-                return False
-        except Exception:
-            pass
-    if host.startswith("172."):
-        try:
-            if 16 <= int(host.split(".")[1]) <= 31:
-                return False
-        except Exception:
-            pass
-    return True   # external http → insecure
+        return True   # unparseable is not "fine"
+    return (u.scheme or "").lower() != "https"
 
 
 def sanitize_for_prompt(s: str, limit: int = 160) -> str:

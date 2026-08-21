@@ -42,3 +42,28 @@ def test_non_http_schemes_are_still_rejected_by_connect() -> None:
     for url in ("file:///etc/passwd", "gopher://x/"):
         with pytest.raises(mcp_client.MCPError):
             asyncio.run(mcp_client.connect("evil", url, None))
+
+
+# ---------------------------------------------------------------------------
+# is_insecure drives a UI badge, not the gate — but it must not CONTRADICT the
+# gate, or the next person reaches for the friendlier of two answers.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("url", [
+    "http://10.0.0.5/mcp",
+    "http://192.168.1.10/mcp",
+    "http://100.100.100.200/mcp",
+    "http://localhost:9000/mcp",
+    "http://127.0.0.1:9000/mcp",
+    "http://172.16.0.1/mcp",
+    "http://evil.example/mcp",
+    "not a url at all",
+])
+def test_is_insecure_never_calls_a_refused_url_fine(url: str) -> None:
+    """Mark 3 reported all of these as fine, because on a tailnet they were.
+    _assert_safe_url refuses every one of them now."""
+    assert mcp_client.is_insecure(url) is True, f"{url} reported as secure"
+
+
+def test_https_is_the_only_secure_answer() -> None:
+    assert mcp_client.is_insecure("https://mcp.example.com/rpc") is False
