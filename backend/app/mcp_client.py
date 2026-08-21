@@ -45,13 +45,14 @@ import httpx
 
 from . import mcp_self, mcp_stdio
 from .providers import keystore
+from .paths import data_path
 
 log = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_STORE_PATH = _REPO_ROOT / ".data" / "mcp_servers.json"
-_STATE_PATH = _REPO_ROOT / ".data" / "mcp_state.json"     # {enabled: bool} — global kill switch
-_AUDIT_PATH = _REPO_ROOT / ".data" / "mcp_audit.jsonl"    # one line per tool call (no secrets)
+_STORE_PATH = data_path("mcp_servers.json")
+_STATE_PATH = data_path("mcp_state.json")     # {enabled: bool} — global kill switch
+_AUDIT_PATH = data_path("mcp_audit.jsonl")    # one line per tool call (no secrets)
 _HANDS_PATH = _REPO_ROOT / "backend" / "mcp.hands.json"   # config-driven built-in servers
 
 _PROTOCOL = "2025-06-18"

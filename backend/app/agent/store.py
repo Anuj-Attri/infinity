@@ -17,9 +17,10 @@ import time
 from pathlib import Path
 
 from .schemas import MissionState
+from ..paths import data_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_DB_PATH = _REPO_ROOT / ".data" / "missions.db"
+_DB_PATH = data_path("missions.db")
 _LOCK = threading.Lock()
 _conn: sqlite3.Connection | None = None
 

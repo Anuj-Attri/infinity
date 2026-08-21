@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from .paths import data_path
 
 # Mark 3 looked at the REPO ROOT (parents[2]). The image only copies backend/,
 # so skills at the repo root simply are not in the container — the engine finds
@@ -43,7 +44,7 @@ import numpy as np
 _REPO_ROOT = Path(__file__).resolve().parents[2]     # <repo> — runtime state (.data)
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]  # <repo>/backend — shipped content
 SKILLS_DIR = Path(_BACKEND_ROOT / "skills")
-_STATE_PATH = _REPO_ROOT / ".data" / "skills.json"
+_STATE_PATH = data_path("skills.json")
 
 _LOCK = threading.Lock()
 _FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)

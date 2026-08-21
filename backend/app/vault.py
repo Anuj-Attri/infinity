@@ -39,13 +39,14 @@ from typing import Any
 import numpy as np
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
+from .paths import data_path
 
 router = APIRouter(prefix="/vault", tags=["vault"])
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 VAULT_DIR = Path(os.environ.get("VAULT_DIR") or (_REPO_ROOT / "vault"))
 _ASSETS = "_assets"
-_DB_PATH = _REPO_ROOT / ".data" / "vault.db"
+_DB_PATH = data_path("vault.db")
 
 _CHUNK_CHARS = 1200
 _CHUNK_OVERLAP = 150

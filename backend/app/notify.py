@@ -30,9 +30,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from .paths import data_dir
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_DATA = _REPO_ROOT / ".data"
+_DATA = data_dir()
 _QUEUE_PATH = _DATA / "notify_queue.json"
 _SETTINGS_PATH = _DATA / "notify_settings.json"
 

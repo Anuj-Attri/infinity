@@ -76,6 +76,7 @@ _CONFIG_KEYS: list[tuple[str, str, bool]] = [
     ("SUPABASE_URL", "Auth and storage (M3+).", False),
     ("SUPABASE_SERVICE_ROLE_KEY", "Backend DB access. NOTE: bypasses RLS entirely.", False),
     ("VOYAGE_API_KEY", "Embeddings, and therefore Vault search and citations (M5).", False),
+    ("DATA_DIR", "Where state is written. Unset = the container's own disk, which a redeploy WIPES.", False),
     ("MARK4_DEV_ACCOUNT", "DEV ONLY. Must be unset in production — it makes every request resolve to one account.", False),
     ("ALLOW_PLAINTEXT_KEYSTORE", "DEV ONLY. Lets provider keys be written unencrypted.", False),
 ]
@@ -170,13 +171,21 @@ def _subsystems() -> list[Subsystem]:
     ))
 
     # --- persistence --------------------------------------------------------
+    from .paths import data_dir, is_ephemeral
+    eph = is_ephemeral()
     out.append(Subsystem(
         id="persistence", name="Persistence",
-        status="degraded",
-        detail="SQLite on the container filesystem. A redeploy wipes it — "
-               "including the master password, so the instance returns to "
-               "first-run setup after every deploy.",
-        unblock="M4: Postgres with org_id/owner_account_id on every table.",
+        status="degraded" if eph else "ok",
+        detail=(f"SQLite at {data_dir()} on the container's OWN disk. A redeploy "
+                f"wipes it — including the master password, so the instance drops "
+                f"back to first-run setup after every deploy."
+                if eph else
+                f"SQLite at {data_dir()} (DATA_DIR is set, so this should be a "
+                f"mounted volume that survives a redeploy)."),
+        unblock=("Mount a volume and set DATA_DIR to it. M4 then moves this to "
+                 "Postgres with org_id/owner_account_id on every table."
+                 if eph else
+                 "M4: Postgres with org_id/owner_account_id on every table."),
     ))
 
     return out

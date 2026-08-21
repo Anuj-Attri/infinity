@@ -33,6 +33,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+from ..paths import data_dir
 
 log = logging.getLogger(__name__)
 
@@ -242,7 +243,7 @@ class KeyStoreReport:
 
 
 def _data_dir() -> Path:
-    return Path(__file__).resolve().parents[3] / ".data"
+    return data_dir()
 
 
 _CHAT_PATH     = _data_dir() / "chat_keys.json"

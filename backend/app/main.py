@@ -111,11 +111,12 @@ from . import spend  # noqa: E402
 from . import session_overview  # noqa: E402
 from . import skills_engine  # noqa: E402
 from . import context_budget  # noqa: E402
+from .paths import data_path
 
 # Single shared memory store. DB lives at <repo>/.data/infinity.db (gitignored).
 # TODO(M2): a container filesystem is ephemeral — this SQLite file does not
 # survive a redeploy. Postgres/Supabase owns this from M3 (AGENTS.md).
-_DB_PATH = _REPO_ROOT / ".data" / "infinity.db"
+_DB_PATH = data_path("infinity.db")
 MEMORY = MemoryStore(_DB_PATH)
 # Mark 3 also called rag_set_store(MEMORY) here so rag.py's doc_chunks table
 # shared this DB. rag.py is GONE — the Vault is the one knowledge base.
@@ -2334,7 +2335,7 @@ async def narrator_observe(body: NarratorIn) -> dict:
 # store so "allow always" grants survive app restarts.
 # Format on disk: {"spawn_tile": "always", ...}
 
-_PERMISSIONS_PATH = _REPO_ROOT / ".data" / "nova_permissions.json"
+_PERMISSIONS_PATH = data_path("nova_permissions.json")
 
 
 def _load_permissions() -> dict[str, str]:

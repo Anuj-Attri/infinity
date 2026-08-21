@@ -39,12 +39,13 @@ from typing import Any
 import bcrypt
 
 from .providers import keystore
+from .paths import data_dir
 
 log = logging.getLogger(__name__)
 
 # .data lives at repo-root/.data — three parents up from this file
 # (app/auth.py -> app -> backend -> repo-root).
-_DATA_DIR = Path(__file__).resolve().parents[2] / ".data"
+_DATA_DIR = data_dir()
 _AUTH_PATH = _DATA_DIR / "auth.json"
 _TOKENS_PATH = _DATA_DIR / "tokens.json"
 

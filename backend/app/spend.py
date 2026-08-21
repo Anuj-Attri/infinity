@@ -38,10 +38,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .paths import data_path
+
 log = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_SPEND_PATH = _REPO_ROOT / ".data" / "spend.json"
+_SPEND_PATH = data_path("spend.json")
 _LOCK = threading.Lock()
 
 # USD per 1,000,000 tokens: (input, output). Matches current Anthropic + the
