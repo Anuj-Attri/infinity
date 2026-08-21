@@ -201,6 +201,28 @@ async def _lifespan(application: FastAPI):
     """Startup: warm the dispatch model cache inside the running event loop.
     dispatch.init_from_disk() is sync-safe at import time; the async cache
     fill must wait until the loop exists."""
+    # WHERE AM I, AND IS THE DOOR SHUT.
+    #
+    # Both questions were unanswerable from outside at the moment they mattered
+    # most. The region cannot be read back from Railway's API at all (see
+    # hosting.where()), and /admin/diagnostics — which knows both answers — sits
+    # behind the door AND behind auth, so it is unreachable precisely when the
+    # deployment is misconfigured or the edge is throttling. The boot log is the
+    # one channel that needs no credential and no working ingress.
+    #
+    # Nothing here prints a secret: the door line reports SHUT/OPEN, never the
+    # token.
+    try:
+        from . import hosting
+        from .gatekeeper import is_locked
+        w = hosting.where()
+        print(f"[boot] host={w['platform']} region={w['region'] or 'unknown'} "
+              f"env={w['environment'] or '-'} proxy={hosting.describe()}", flush=True)
+        print(f"[boot] public door: {'SHUT (ACCESS_TOKEN set)' if is_locked() else 'NO TOKEN SET — non-loopback requests get 404'}",
+              flush=True)
+    except Exception as e:  # never let a log line stop the app booting
+        print(f"[boot] environment banner unavailable: {e}", flush=True)
+
     try:
         from app.providers.dispatch import _refresh_model_cache
         await _refresh_model_cache()

@@ -184,6 +184,28 @@ jobs:
                  exit 1; }
           echo "OK: skills indexed in the image."
 
+          # The boot banner is a diagnostic instrument, so it has to survive.
+          # It is the ONLY way to read the deployed region — Railway's API
+          # reports region:null forever — and the only way to see the door state
+          # when the edge is rate-limiting or the door itself is shut. Both of
+          # those happened on 2026-08-21, and between them every other channel
+          # was unavailable. A silently-dropped log line would take that away
+          # exactly when it is needed.
+          echo
+          echo "--- boot banner ---"
+          docker logs api 2>&1 | grep -E "^\[boot\] host=" \
+            || { echo "FAIL: no [boot] environment line."; docker logs api; exit 1; }
+          docker logs api 2>&1 | grep -E "^\[boot\] public door: SHUT" \
+            || { echo "FAIL: door banner missing or not SHUT despite ACCESS_TOKEN being set."
+                 docker logs api 2>&1 | grep -i door || true
+                 exit 1; }
+          # And it must never print the token it is reporting on.
+          if docker logs api 2>&1 | grep -q "ci-door-key"; then
+            echo "FAIL: the access token appears in the container logs."
+            exit 1
+          fi
+          echo "OK: boot banner present, door SHUT, no token in logs."
+
       # The container serves the SPA at "/" and the API on the same origin, so
       # this drives the REAL artifact — one process, exactly what deploys — not
       # a dev server pair that only resembles it.
