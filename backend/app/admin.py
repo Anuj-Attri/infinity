@@ -76,6 +76,7 @@ _CONFIG_KEYS: list[tuple[str, str, bool]] = [
     ("SUPABASE_URL", "Auth and storage (M3+).", False),
     ("SUPABASE_SERVICE_ROLE_KEY", "Backend DB access. NOTE: bypasses RLS entirely.", False),
     ("VOYAGE_API_KEY", "Embeddings, and therefore Vault search and citations (M5).", False),
+    ("TRUST_PROXY_HEADERS", "Set to 1 ONLY behind a proxy (Railway/Cloudflare). Rate limiting counts the forwarded IP instead of the proxy's.", False),
     ("DATA_DIR", "Where state is written. Unset = the container's own disk, which a redeploy WIPES.", False),
     ("MARK4_DEV_ACCOUNT", "DEV ONLY. Must be unset in production — it makes every request resolve to one account.", False),
     ("ALLOW_PLAINTEXT_KEYSTORE", "DEV ONLY. Lets provider keys be written unencrypted.", False),

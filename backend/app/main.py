@@ -102,6 +102,7 @@ from .fs      import router as fs_router       # noqa: E402
 from .browse  import router as browse_router, set_ingest as browse_set_ingest  # noqa: E402
 from .mcp_api import router as mcp_router  # noqa: E402
 from .admin import router as admin_router  # noqa: E402
+from . import ratelimit  # noqa: E402
 from . import mcp_client  # noqa: E402
 from .chat_providers     import router as chat_providers_router      # noqa: E402
 from .dispatch_providers import router as dispatch_providers_router  # noqa: E402
@@ -276,6 +277,14 @@ app = FastAPI(title="Mark 4", version="0.0.1",
 # and is fatal hosted (PUNCHLIST B7). An unset origin list means "same-origin
 # only", which fails closed rather than open.
 _origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+# Registered BEFORE CORSMiddleware on purpose. Starlette runs middleware in
+# reverse registration order, so the later-registered CORS layer ends up OUTSIDE
+# this one and adds its headers to the 429 on the way out. Without that a
+# rate-limited browser sees an opaque network error instead of "too many
+# sign-in attempts". Verified, not assumed: a 429 carries
+# access-control-allow-origin.
+app.middleware("http")(ratelimit.middleware)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
