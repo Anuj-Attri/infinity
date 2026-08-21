@@ -32,9 +32,12 @@ NOTES.local.md
 **/.mypy_cache/
 **/.ruff_cache/
 
-# The frontend is deployed separately to Cloudflare Pages; the backend image
-# has no use for it and node_modules alone would dwarf the image.
-frontend/
+# The frontend IS built inside this image (see infra/Dockerfile's `web` stage),
+# so the sources must reach the build context. Only the heavy derived
+# directories are excluded — npm ci regenerates node_modules in the stage.
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
 
 # Local data must never be baked into an image
 .data/
@@ -42,6 +45,8 @@ frontend/
 *.db
 *.sqlite3
 
-# Docs
+# Docs. Deliberately NOT a blanket *.md rule: backend/skills/*/SKILL.md IS the
+# skills content, and excluding it makes skills_engine index 0 in the container
+# while working perfectly on a laptop — every turn then silently loses its skill
+# blocks. A few KB of stray markdown in the image is the cheaper mistake.
 docs/
-*.md

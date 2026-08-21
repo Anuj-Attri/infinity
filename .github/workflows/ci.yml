@@ -103,4 +103,33 @@ jobs:
             exit 1
           fi
           echo "OK: arrived incrementally."
+
+          # The image builds the SPA and mounts it at "/". If that stage silently
+          # produced nothing, "/" returns {"detail":"Not Found"} and the deploy
+          # looks broken to anyone who opens the URL in a browser. Assert the app
+          # is actually in there.
+          echo
+          echo "--- SPA served at / ---"
+          root=$(curl -s http://127.0.0.1:8000/)
+          echo "$root" | head -c 200; echo
+          case "$root" in
+            *"<div id=\"root\">"*) echo "OK: SPA is in the image." ;;
+            *) echo "FAIL: / did not serve the built frontend."
+               docker logs api | grep -i "wire\]" || true
+               exit 1 ;;
+          esac
+
+          # And the catch-all must not have shadowed the API.
+          curl -sf http://127.0.0.1:8000/health >/dev/null \
+            || { echo "FAIL: the / mount shadowed /health."; exit 1; }
+          echo "OK: /health still reachable behind the SPA mount."
+
+          # Skills content must survive .dockerignore. Indexing 0 in the
+          # container while working locally is a silent, per-turn quality loss.
+          docker logs api 2>&1 | grep -E "skills indexed: [1-9]" \
+            || { echo "FAIL: skills indexed 0 in the image."
+                 docker logs api 2>&1 | grep -i skills || true
+                 exit 1; }
+          echo "OK: skills indexed in the image."
+
           docker rm -f api

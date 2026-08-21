@@ -179,12 +179,17 @@ def mount_frontend(app) -> None:
     browser. MUST be called AFTER all API routes are registered (a mount at "/"
     is a catch-all; earlier-registered routes win, this catches the rest).
     No-op when there's no production build, so dev (vite) is untouched."""
-    try:
-        from pathlib import Path as _P
-        from fastapi.staticfiles import StaticFiles
-        _dist = _P(__file__).resolve().parents[2] / "dist"
-        if _dist.is_dir():
-            app.mount("/", StaticFiles(directory=str(_dist), html=True), name="app")
-            print(f"[wire] serving built frontend from {_dist}", flush=True)
-    except Exception as e:
-        print(f"[wire] static frontend mount skipped: {e}", flush=True)
+    from pathlib import Path as _P
+    from fastapi.staticfiles import StaticFiles
+
+    _dist = _P(__file__).resolve().parents[2] / "dist"
+    if _dist.is_dir():
+        app.mount("/", StaticFiles(directory=str(_dist), html=True), name="app")
+        print(f"[wire] serving built frontend from {_dist}", flush=True)
+    else:
+        # Expected in local dev: vite serves the SPA on its own port. In the
+        # container it means the build stage did not produce dist/, and the
+        # symptom is a bare {"detail":"Not Found"} at "/" — which reads like a
+        # broken deploy rather than a missing build. Say which it is.
+        print(f"[wire] no built frontend at {_dist} — API only. "
+              f"(dev: vite serves it separately)", flush=True)

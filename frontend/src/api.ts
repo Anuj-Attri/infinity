@@ -18,15 +18,15 @@ function resolveBackendBase(): string {
   const configured = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim();
   if (configured) return configured.replace(/\/+$/, "");
 
-  // A production build with no API URL configured cannot work, and the failure
-  // is otherwise a pile of confusing CORS and 404 errors against the page's own
-  // origin. Say so once, loudly, at startup.
-  if (import.meta.env.PROD) {
-    throw new Error(
-      "VITE_API_BASE_URL is not set. A production build has no backend to talk to. " +
-      "Set it at build time to the API's HTTPS origin.",
-    );
-  }
+  // No explicit URL in a production build means the backend is serving this page
+  // itself — the container builds the SPA into its own image and mounts dist/ at
+  // "/". Same origin, so there is no CORS surface at all and nothing to
+  // misconfigure.
+  //
+  // If the frontend is ever hosted separately (Cloudflare Pages), that deploy
+  // MUST set VITE_API_BASE_URL, or every call goes to the static host and 404s.
+  if (import.meta.env.PROD) return window.location.origin;
+
   return DEV_FALLBACK_URL;
 }
 
