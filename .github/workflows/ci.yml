@@ -45,6 +45,36 @@ jobs:
         # RUNTIME 500 at request validation. Importing the real app catches it.
         run: python -c "from app.main import app; print('routes:', len(app.routes))"
 
+  frontend:
+    name: Frontend gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Types
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Security audit
+        working-directory: frontend
+        # The static half of the frontend gate. The XSS found on 2026-08-21 was
+        # produced by the backend but EXECUTED here, so a backend-only gate
+        # covers half the path. Fails on: a new dangerouslySetInnerHTML sink, a
+        # ReactMarkdown without urlTransform (the default strips custom schemes,
+        # which wiped the session), a direct third-party fetch, a hardcoded
+        # routable host, a secret-shaped literal, or a desktop-shell import.
+        run: npm run audit
+
   image:
     name: Container builds
     runs-on: ubuntu-latest
