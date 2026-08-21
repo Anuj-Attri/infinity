@@ -113,6 +113,11 @@ export default function App() {
 }
 
 // ── Tool call parser ────────────────────────────────────────────────────────
+// Whether this browser has already crossed into the canvas. Device-local by
+// nature (it describes this browser, not the account), so it stays in
+// localStorage even after account state moves server-side.
+const PHASE_KEY = "infinity.phase.v1";
+
 const NOVA_ACTION_RE = /<nova_action>([\s\S]*?)<\/nova_action>/g;
 const NOVA_ACTION_OPEN = "<nova_action";
 
@@ -179,11 +184,34 @@ function AppInner() {
   // Holds the most-recent Narrator note; consumed once by the next startStream call.
   const narratorNoteRef = useRef<string | null>(null);
 
-  const [phase, setPhase] = useState<Phase>("landing");
+  // The type-to-begin landing is a first-visit ritual, and it should stay one.
+  //
+  // In a desktop app you almost never reload, so an in-memory phase was fine.
+  // On the web, refresh is muscle memory — and dropping someone back to
+  // "Ready when you are." every time, with their whole canvas still sitting
+  // behind it, reads as having lost their work. The layout was always
+  // persisted; only the phase was not.
+  //
+  // So: someone who has already crossed into the canvas comes back to the
+  // canvas. Someone arriving for the first time still gets the ritual.
+  const [phase, setPhase] = useState<Phase>(() => {
+    try {
+      return localStorage.getItem(PHASE_KEY) === "canvas" ? "canvas" : "landing";
+    } catch {
+      return "landing";   // private mode / storage disabled
+    }
+  });
   const [landingInput, setLandingInput] = useState("");
 
-  // PHONE: skip the type-to-begin landing — the voice remote's home IS the
-  // landing (ambient mesh + tap-to-talk orb). Desktop/tablet keep the ritual.
+  useEffect(() => {
+    try {
+      if (phase === "canvas") localStorage.setItem(PHASE_KEY, "canvas");
+      else if (phase === "landing") localStorage.removeItem(PHASE_KEY);
+    } catch { /* storage unavailable — the ritual just repeats, which is safe */ }
+  }, [phase]);
+
+  // PHONE: skip the type-to-begin landing — a small viewport's home IS the
+  // canvas. Desktop/tablet keep the ritual on a first visit.
   useEffect(() => {
     if (isMobile && !isTablet) setPhase((p) => (p === "landing" ? "canvas" : p));
     // eslint-disable-next-line react-hooks/exhaustive-deps
