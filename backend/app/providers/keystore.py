@@ -160,8 +160,47 @@ def backend_name() -> str:
 # encrypted blob, not the per-key dict the BYOK stores use). Same DPAPI
 # backend, same posture: ciphertext on disk is useless off this user+machine.
 
+class PlaintextKeystoreRefused(RuntimeError):
+    """Raised rather than writing a secret in the clear."""
+
+
+# On Linux the DPAPI backend does not exist and _pick_backend() returns the
+# IDENTITY backend, which does not encrypt anything — it base64s the plaintext
+# and calls it ciphertext. Mark 3 logged a warning and carried on, which was
+# survivable when the only reader was one person's own laptop.
+#
+# Hosted, that same path writes master-password hashes, device tokens and
+# provider API keys in the clear onto a shared container filesystem, and the
+# only signal is a WARNING line in a log nobody reads. `/auth/status` on the
+# deployed service currently reports store_backend = "identity", so this is not
+# hypothetical.
+#
+# So the WRITE path fails closed. Reads still work (there is nothing to lose by
+# reading a value that was never protected), and the service still boots — but
+# it cannot be talked into persisting a secret it cannot protect.
+#
+# The escape hatch is explicit and named, for local Linux development where
+# there is nothing real to lose. Real key custody is M2: envelope encryption
+# with a KMS-held key, at which point this whole module is replaced.
+_ALLOW_PLAINTEXT = os.environ.get("ALLOW_PLAINTEXT_KEYSTORE") == "1"
+
+
+def _assert_can_protect() -> None:
+    if _BACKEND.name == "identity" and not _ALLOW_PLAINTEXT:
+        raise PlaintextKeystoreRefused(
+            "Refusing to store a secret: no real keystore is available on this "
+            "platform, so this value would be written to disk unencrypted. "
+            "Key custody lands at M2 (KMS envelope encryption). For local "
+            "development with nothing real at stake, set ALLOW_PLAINTEXT_KEYSTORE=1."
+        )
+
+
 def encrypt_blob(plaintext: str) -> str:
-    """Encrypt a UTF-8 string -> base64 ciphertext (ascii)."""
+    """Encrypt a UTF-8 string -> base64 ciphertext (ascii).
+
+    Raises PlaintextKeystoreRefused when no backend can actually encrypt.
+    """
+    _assert_can_protect()
     ct = _BACKEND.protect(plaintext.encode("utf-8"))
     return base64.b64encode(ct).decode("ascii")
 
@@ -250,7 +289,13 @@ def _load_keys_from(path: Path) -> tuple[dict[str, str], KeyStoreReport]:
 
 
 def _save_keys_to(d: dict[str, str], path: Path) -> None:
-    """Generic encrypt + persist for a given key-store file."""
+    """Generic encrypt + persist for a given key-store file.
+
+    Raises PlaintextKeystoreRefused when no backend can actually encrypt — the
+    BYOK path is the one that would otherwise write a live provider API key to
+    a shared container disk in the clear.
+    """
+    _assert_can_protect()
     path.parent.mkdir(parents=True, exist_ok=True)
     enc: dict[str, str] = {}
     for name, value in d.items():
