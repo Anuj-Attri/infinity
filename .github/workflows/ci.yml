@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push supersedes an in-flight run on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Must match infra/Dockerfile. A version drift between CI and the
+          # image means CI is green about code that never runs in production.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install
+        working-directory: backend
+        run: pip install -r requirements.txt
+
+      - name: Tests
+        working-directory: backend
+        # The leak-test markers are strict=True, so an UNEXPECTED PASS fails the
+        # run. That is deliberate: the suite tells us the moment tenancy actually
+        # lands, instead of a stale marker hiding it.
+        run: pytest -v
+
+      - name: Import the app the way the container does
+        working-directory: backend
+        # py_compile and pytest both miss this class of failure. With
+        # `from __future__ import annotations`, a name used in a Pydantic field
+        # type that is not importable in its module gives a clean compile and a
+        # RUNTIME 500 at request validation. Importing the real app catches it.
+        run: python -c "from app.main import app; print('routes:', len(app.routes))"
+
+  image:
+    name: Container builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile
+          push: false
+          load: true
+          tags: infinity-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Boot it and prove the pipe
+        # "It builds" has never once meant "it works" in this project's history.
+        # So: start the real image, hit /health, and confirm /echo/stream arrives
+        # INCREMENTALLY. A buffering layer turns a live stream into one lump at
+        # the end, and that is miserable to diagnose once a model is in the path.
+        run: |
+          docker run -d --name api -p 8000:8000 -e PORT=8000 infinity-backend:ci
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/health && break
+            sleep 1
+          done
+          echo
+          echo "--- health ---"
+          curl -sf http://127.0.0.1:8000/health || { docker logs api; exit 1; }
+          echo
+          echo "--- streaming ---"
+          start=$(date +%s%N)
+          first=""
+          curl -sN -X POST http://127.0.0.1:8000/echo/stream \
+               -H 'content-type: application/json' \
+               -d '{"text":"one two three four five","delay_ms":200}' \
+          | while IFS= read -r line; do
+              now=$(date +%s%N)
+              echo "$(( (now - start) / 1000000 ))ms  $line"
+            done > /tmp/stream.txt
+          cat /tmp/stream.txt
+          # Five words at 200ms apart cannot finish in under 800ms unless the
+          # server ignored the delay; and if the response were buffered, every
+          # line would carry a near-identical elapsed time. Assert the last line
+          # is meaningfully later than the first.
+          firstms=$(head -1 /tmp/stream.txt | cut -dm -f1)
+          lastms=$(tail -1 /tmp/stream.txt | cut -dm -f1)
+          echo "first=${firstms}ms last=${lastms}ms"
+          if [ "$(( lastms - firstms ))" -lt 500 ]; then
+            echo "FAIL: response was buffered, not streamed."
+            docker logs api
+            exit 1
+          fi
+          echo "OK: arrived incrementally."
+          docker rm -f api

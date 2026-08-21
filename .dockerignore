@@ -1,0 +1,47 @@
+# Build context is the repo root (the Dockerfile does COPY backend/...).
+# Everything the image does not need stays out: a fat context is slow to upload
+# on every deploy, and secrets that never enter the context cannot leak from a
+# layer.
+
+.git
+.github
+.gitignore
+.gitattributes
+
+# Secrets — belt and braces. These are gitignored too.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Agent + editor scratch
+AGENTS.md
+NOTES.local.md
+.claude/
+.cursor/
+.vscode/
+.idea/
+
+# Python build junk
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+**/venv/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# The frontend is deployed separately to Cloudflare Pages; the backend image
+# has no use for it and node_modules alone would dwarf the image.
+frontend/
+
+# Local data must never be baked into an image
+.data/
+.run/
+*.db
+*.sqlite3
+
+# Docs
+docs/
+*.md

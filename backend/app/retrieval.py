@@ -84,6 +84,36 @@ def visibility_params(account: Account) -> dict[str, object]:
     }
 
 
+async def ingest_text(
+    text: str,
+    *,
+    account: Account,
+    scope: Scope,
+    title: str = "Untitled",
+    source_url: str | None = None,
+) -> str:
+    """Chunk, embed and store `text`, owned by `account` at `scope`. Returns a document id.
+
+    The write side of the same invariant `retrieve` enforces on the read side: a row
+    without an owner cannot be filtered, so ownership is decided HERE, at write time,
+    from the Account — never from anything on the request.
+
+    `source_url` is what makes the resulting answer citable. Product law #1 says an
+    answer without a source is a bug, so it travels with the document rather than
+    being reconstructed later.
+
+    EMBEDDING MODEL IS FROZEN. The dimension is baked into the `chunks.embedding`
+    column; changing models later means re-embedding every row in the system. Each row
+    records which model produced it (`chunks.embedding_model`) so that day is an
+    incremental migration rather than a schema break.
+    """
+    raise NotImplementedError(
+        "M5: chunk, embed via the frozen embedding model, and insert into `chunks` "
+        "with org_id/owner_account_id/scope set from `account`. Until then "
+        "tests/test_tenancy_leak.py fails, which is correct."
+    )
+
+
 async def retrieve(
     question: str,
     *,
@@ -108,7 +138,7 @@ async def retrieve(
         return []
 
     raise NotImplementedError(
-        "M3: implement pgvector search over `chunks` using VISIBILITY_PREDICATE. "
+        "M5: implement pgvector search over `chunks` using VISIBILITY_PREDICATE. "
         "Until then tests/test_tenancy_leak.py fails, which is correct — the "
         "target exists before the thing that satisfies it."
     )
