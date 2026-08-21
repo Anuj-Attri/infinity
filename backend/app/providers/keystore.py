@@ -169,38 +169,53 @@ class PlaintextKeystoreRefused(RuntimeError):
 # and calls it ciphertext. Mark 3 logged a warning and carried on, which was
 # survivable when the only reader was one person's own laptop.
 #
-# Hosted, that same path writes master-password hashes, device tokens and
-# provider API keys in the clear onto a shared container filesystem, and the
-# only signal is a WARNING line in a log nobody reads. `/auth/status` on the
-# deployed service currently reports store_backend = "identity", so this is not
-# hypothetical.
+# Hosted, that path would write provider API keys in the clear onto a shared
+# container filesystem, announced only by a WARNING in a log nobody reads.
+# `/auth/status` on the deployed service reports store_backend = "identity", so
+# this is not hypothetical.
 #
-# So the WRITE path fails closed. Reads still work (there is nothing to lose by
-# reading a value that was never protected), and the service still boots — but
-# it cannot be talked into persisting a secret it cannot protect.
+# The line is drawn by what is actually at risk, not by "is it a secret":
 #
-# The escape hatch is explicit and named, for local Linux development where
-# there is nothing real to lose. Real key custody is M2: envelope encryption
-# with a KMS-held key, at which point this whole module is replaced.
+#   encrypt_blob()  — auth.py's bcrypt hash and device tokens. ALLOWED. A bcrypt
+#                     hash is built to be stored at rest, and anyone who can read
+#                     this filesystem already has the environment, where the
+#                     credentials that matter live. The UI discloses it.
+#   _save_keys_to() — a live third-party API key with money attached. REFUSED.
+#                     There is also no reason to store one: DIRECTION says we own
+#                     and pay for the key, so it comes from the environment
+#                     (OPENROUTER_API_KEY) and there is no BYOK flow to support.
+#
+# The escape hatch is explicit and named, for local Linux development where there
+# is nothing real to lose. Real key custody is M2: envelope encryption with a
+# KMS-held key, at which point this whole module is replaced.
 _ALLOW_PLAINTEXT = os.environ.get("ALLOW_PLAINTEXT_KEYSTORE") == "1"
 
 
-def _assert_can_protect() -> None:
+def _assert_can_protect(what: str) -> None:
     if _BACKEND.name == "identity" and not _ALLOW_PLAINTEXT:
         raise PlaintextKeystoreRefused(
-            "Refusing to store a secret: no real keystore is available on this "
-            "platform, so this value would be written to disk unencrypted. "
-            "Key custody lands at M2 (KMS envelope encryption). For local "
-            "development with nothing real at stake, set ALLOW_PLAINTEXT_KEYSTORE=1."
+            f"Refusing to store {what}: no real keystore is available on this "
+            "platform, so it would be written to disk unencrypted. Provider keys "
+            "belong in the environment (OPENROUTER_API_KEY), not in a per-user "
+            "store — we own and pay for the key, so there is no BYOK flow to "
+            "support. Set ALLOW_PLAINTEXT_KEYSTORE=1 only for local development."
         )
 
 
 def encrypt_blob(plaintext: str) -> str:
     """Encrypt a UTF-8 string -> base64 ciphertext (ascii).
 
-    Raises PlaintextKeystoreRefused when no backend can actually encrypt.
+    NOT gated on a real backend, deliberately. The only caller is auth.py, which
+    stores a bcrypt password hash and device tokens. A bcrypt hash is designed to
+    be stored at rest — DPAPI on top of it was belt-and-braces, not the control
+    that matters — and anyone who can read this container's filesystem already
+    has its environment, where the credentials that DO matter live.
+
+    The UI already tells the user plainly when this degrades ("Encryption
+    unavailable (identity)"), so the weaker guarantee is disclosed rather than
+    hidden. Compare _save_keys_to(), which DOES refuse: a live third-party API
+    key with money attached is a different class of thing.
     """
-    _assert_can_protect()
     ct = _BACKEND.protect(plaintext.encode("utf-8"))
     return base64.b64encode(ct).decode("ascii")
 
@@ -291,11 +306,11 @@ def _load_keys_from(path: Path) -> tuple[dict[str, str], KeyStoreReport]:
 def _save_keys_to(d: dict[str, str], path: Path) -> None:
     """Generic encrypt + persist for a given key-store file.
 
-    Raises PlaintextKeystoreRefused when no backend can actually encrypt — the
-    BYOK path is the one that would otherwise write a live provider API key to
-    a shared container disk in the clear.
+    Raises PlaintextKeystoreRefused when no backend can actually encrypt — this
+    is the path that would otherwise write a live provider API key to a shared
+    container disk in the clear.
     """
-    _assert_can_protect()
+    _assert_can_protect("a provider API key")
     path.parent.mkdir(parents=True, exist_ok=True)
     enc: dict[str, str] = {}
     for name, value in d.items():
