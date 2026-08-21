@@ -33,6 +33,10 @@ _DEPLOYMENT_ENV = (
     "MARK4_DEV_ACCOUNT",       # resolves every request to one account
     "ALLOW_PLAINTEXT_KEYSTORE",
     "TRUST_PROXY_HEADERS",
+    # Railway injects these into the container. A test must not inherit them
+    # from a shell that happens to have them set.
+    "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID", "RAILWAY_ENVIRONMENT_ID",
+    "RAILWAY_ENVIRONMENT_NAME", "RAILWAY_PUBLIC_DOMAIN",
     "ENABLE_API_DOCS",
     "ALLOWED_ORIGINS",
     "DATA_DIR",

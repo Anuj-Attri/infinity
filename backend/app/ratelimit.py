@@ -36,8 +36,15 @@ from fastapi.responses import JSONResponse
 # X-Forwarded-For is set by whoever is upstream — including the client, if
 # nothing is upstream. Trusting it unconditionally lets an attacker rotate a
 # header and get an unlimited number of buckets, which is worse than no limit
-# because it looks like protection. Opt in only where a proxy really is in front.
-_TRUST_PROXY = os.environ.get("TRUST_PROXY_HEADERS") == "1"
+# because it looks like protection.
+#
+# So it is never on by default, but it no longer has to be REMEMBERED either:
+# hosting.behind_proxy() infers it from Railway's own injected variables, which
+# a request cannot forge. An explicit TRUST_PROXY_HEADERS still wins either way.
+# Read per-call rather than at import so a test can change it without a reload.
+def _trust_proxy() -> bool:
+    from .hosting import behind_proxy
+    return behind_proxy()
 
 
 @dataclass
@@ -92,7 +99,7 @@ _last_sweep = 0.0
 
 def client_key(request: Request) -> str:
     """Who to count against. The socket peer unless a proxy is trusted."""
-    if _TRUST_PROXY:
+    if _trust_proxy():
         xff = request.headers.get("x-forwarded-for") or ""
         first = xff.split(",")[0].strip()
         if first:

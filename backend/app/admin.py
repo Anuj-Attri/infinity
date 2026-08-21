@@ -76,8 +76,8 @@ _CONFIG_KEYS: list[tuple[str, str, bool]] = [
     ("SUPABASE_URL", "Auth and storage (M3+).", False),
     ("SUPABASE_SERVICE_ROLE_KEY", "Backend DB access. NOTE: bypasses RLS entirely.", False),
     ("VOYAGE_API_KEY", "Embeddings, and therefore Vault search and citations (M5).", False),
-    ("ACCESS_TOKEN", "Locks the WHOLE deployment behind a pre-shared key. Unset = anyone with the URL is in.", True),
-    ("TRUST_PROXY_HEADERS", "Set to 1 ONLY behind a proxy (Railway/Cloudflare). Rate limiting counts the forwarded IP instead of the proxy's.", False),
+    ("ACCESS_TOKEN", "The outermost door. UNSET means the service answers only /health to anything that is not loopback — inert, not open. Required for a deployment to be usable at all.", True),
+    ("TRUST_PROXY_HEADERS", "Usually unnecessary — Railway is auto-detected from its injected variables. Set to 0 to force forwarded headers to be IGNORED.", False),
     ("DATA_DIR", "Where state is written. Unset = the container's own disk, which a redeploy WIPES.", False),
     ("MARK4_DEV_ACCOUNT", "DEV ONLY. Must be unset in production — it makes every request resolve to one account.", False),
     ("ALLOW_PLAINTEXT_KEYSTORE", "DEV ONLY. Lets provider keys be written unencrypted.", False),
@@ -192,6 +192,21 @@ def _subsystems() -> list[Subsystem]:
                 "Set ACCESS_TOKEN to make the deployment reachable at all "
                 "(waitlist link: /access#<token>). Remove it at M3, when real "
                 "accounts replace a shared secret.",
+    ))
+
+    # --- proxy trust --------------------------------------------------------
+    from .hosting import describe as _describe, behind_proxy
+    out.append(Subsystem(
+        id="proxy", name="Forwarded headers",
+        status="ok",
+        detail=(f"{_describe()}. "
+                + ("The client IP is read from X-Forwarded-For, so rate limiting "
+                   "counts real callers rather than the proxy."
+                   if behind_proxy() else
+                   "Forwarded headers are ignored, which is correct with nothing "
+                   "upstream — believing them there would give an attacker an "
+                   "unlimited number of rate-limit buckets.")),
+        unblock=None,
     ))
 
     # --- error reporting ----------------------------------------------------

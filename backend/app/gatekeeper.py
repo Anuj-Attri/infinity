@@ -113,13 +113,15 @@ def _cookie_secure(request: Request) -> bool:
     """HttpOnly cookies on a public HTTPS deploy must carry Secure.
 
     Railway (and Cloudflare) terminate TLS and speak HTTP to the container, so
-    request.url.scheme is often "http". When TRUST_PROXY_HEADERS=1, honour
-    X-Forwarded-Proto — the same opt-in rule as the rate limiter, because an
-    untrusted client can spoof that header too.
+    request.url.scheme is often "http". X-Forwarded-Proto is only believed when
+    a proxy is known to be in front — the same rule as the rate limiter, because
+    an untrusted client can spoof that header too. hosting.behind_proxy() infers
+    that from Railway's own injected variables, which a request cannot forge.
     """
     if request.url.scheme == "https":
         return True
-    if os.environ.get("TRUST_PROXY_HEADERS") == "1":
+    from .hosting import behind_proxy
+    if behind_proxy():
         proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
         if proto.lower() == "https":
             return True
