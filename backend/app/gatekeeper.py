@@ -154,10 +154,39 @@ def _deny() -> JSONResponse:
     return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
 
+def _is_loopback(request: Request) -> bool:
+    """True only for a request that arrived on the local machine.
+
+    Behind ANY proxy — Railway, Cloudflare, nginx — request.client.host is the
+    proxy's address, never loopback. That asymmetry is exactly what makes this a
+    safe test for "is this a developer on their own box": it cannot accidentally
+    be true for a request off the internet.
+    """
+    host = (request.client.host if request.client else "") or ""
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
 async def middleware(request: Request, call_next):
     expected = _token()
-    if not expected or request.url.path in _EXEMPT:
+    if request.url.path in _EXEMPT:
         return await call_next(request)
+
+    # FAIL CLOSED WHEN UNCONFIGURED.
+    #
+    # This used to pass everything through when ACCESS_TOKEN was unset, so a
+    # deployment was OPEN until someone remembered to set a variable. That is
+    # the same shape as the /auth/setup hole: a default that is safe on a laptop
+    # and wrong the moment the thing is reachable. Forgetting is the common
+    # case, and a security control whose safe state depends on remembering is
+    # not a control.
+    #
+    # So: no token and not loopback means nothing is served but /health. Local
+    # development still needs zero configuration; a hosted deploy that has not
+    # been configured is inert rather than exposed.
+    if not expected:
+        if _is_loopback(request):
+            return await call_next(request)
+        return _deny()
 
     # Wrong-guess budget burned → 404 for everything from this IP (including a
     # later correct key) until the window slides. Same status as a miss, so the

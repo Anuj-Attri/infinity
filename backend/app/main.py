@@ -340,6 +340,13 @@ observability.init()
 # auth gate. A locked deployment should not disclose even its CORS policy.
 app.middleware("http")(gatekeeper.middleware)
 
+# Say it at boot, once, so an unconfigured deployment is obvious in the logs
+# rather than discovered by someone finding the URL.
+if not gatekeeper.is_locked():
+    print("[gatekeeper] ACCESS_TOKEN is NOT set — only loopback requests will be "
+          "served. A hosted deployment will answer nothing but /health until it "
+          "is configured.", flush=True)
+
 _BOOTED_AT = time.time()
 
 

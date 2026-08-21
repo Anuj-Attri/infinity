@@ -205,9 +205,25 @@ def test_public_routes_are_still_public_behind_the_door(locked):
 # Unset = open, which is what local development needs
 # --------------------------------------------------------------------------
 
-def test_unset_leaves_the_app_open(unlocked):
-    """Local dev needs no configuration, and a developer on loopback is not the
-    threat. A DEPLOYMENT being open until this is set is why the console reports
-    it and the runbook lists it first."""
-    assert unlocked().get("/auth/status").status_code == 200
+def test_unset_serves_loopback_only(unlocked):
+    """Unconfigured means LOCAL ONLY, not open.
+
+    This used to pass everything through when ACCESS_TOKEN was unset, so a
+    deployment was open until someone remembered a variable — the same shape as
+    the /auth/setup hole. Forgetting is the common case, and a control whose safe
+    state depends on remembering is not a control.
+    """
+    assert unlocked().get("/auth/status").status_code == 200   # loopback: fine
     assert unlocked().get("/vault/stats").status_code == 401   # auth still applies
+
+
+def test_unset_serves_NOTHING_to_a_remote_caller(unlocked, remote_client):
+    """The correction. An unconfigured deployment is inert, not exposed."""
+    import app.main as m
+    c = remote_client(m.app)
+    for path in ("/", "/auth/status", "/auth/setup", "/vault/stats"):
+        assert c.get(path).status_code == 404, (
+            f"{path} answered a stranger on an UNCONFIGURED deployment"
+        )
+    # The healthcheck must still work, or the deploy never goes live.
+    assert c.get("/health").status_code == 200

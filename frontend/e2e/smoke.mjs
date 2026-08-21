@@ -36,8 +36,15 @@ const TILES = [
 const results = [];
 let pageErrors = [];
 
+// The deployment fails closed when ACCESS_TOKEN is set, so the harness has to
+// present the door key on every request — exactly as a real browser does once
+// it has been through /access.
+const DOOR = process.env.ACCESS_TOKEN || "";
 const browser = await chromium.launch();
-const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+const ctx = await browser.newContext({
+  viewport: { width: 1600, height: 1000 },
+  ...(DOOR ? { extraHTTPHeaders: { "X-Access-Token": DOOR } } : {}),
+});
 const page = await ctx.newPage();
 
 page.on("console", (m) => {

@@ -105,7 +105,7 @@ jobs:
         # request arriving over the docker bridge is not loopback — which is the
         # same branch a real internet request lands in.
         run: |
-          docker run -d --name api -p 8000:8000 -e PORT=8000 -e SETUP_TOKEN=ci-setup-token infinity-backend:ci
+          docker run -d --name api -p 8000:8000 -e PORT=8000 -e SETUP_TOKEN=ci-setup-token -e ACCESS_TOKEN=ci-door-key infinity-backend:ci
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:8000/health && break
             sleep 1
@@ -118,6 +118,7 @@ jobs:
           start=$(date +%s%N)
           first=""
           curl -sN -X POST http://127.0.0.1:8000/echo/stream \
+               -H 'X-Access-Token: ci-door-key' \
                -H 'content-type: application/json' \
                -d '{"text":"one two three four five","delay_ms":200}' \
           | while IFS= read -r line; do
@@ -145,7 +146,7 @@ jobs:
           # is actually in there.
           echo
           echo "--- SPA served at / ---"
-          root=$(curl -s http://127.0.0.1:8000/)
+          root=$(curl -s -H "X-Access-Token: ci-door-key" http://127.0.0.1:8000/)
           echo "$root" | head -c 200; echo
           case "$root" in
             *"<div id=\"root\">"*) echo "OK: SPA is in the image." ;;
@@ -158,6 +159,22 @@ jobs:
           curl -sf http://127.0.0.1:8000/health >/dev/null \
             || { echo "FAIL: the / mount shadowed /health."; exit 1; }
           echo "OK: /health still reachable behind the SPA mount."
+
+          # The door must actually be shut in the REAL image. A container that
+          # answers a stranger is the exact failure this layer exists to
+          # prevent, so assert it against the artifact rather than trusting the
+          # unit tests alone.
+          echo
+          echo "--- door ---"
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/auth/status)
+          [ "$code" = "404" ] \
+            || { echo "FAIL: door open — /auth/status returned $code with no token."
+                 exit 1; }
+          root_code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/)
+          [ "$root_code" = "404" ] \
+            || { echo "FAIL: the SPA is served to anyone — / returned $root_code."
+                 exit 1; }
+          echo "OK: locked. Nothing but /health answers without the token."
 
           # Skills content must survive .dockerignore. Indexing 0 in the
           # container while working locally is a silent, per-turn quality loss.
@@ -187,6 +204,7 @@ jobs:
         env:
           APP_URL: http://127.0.0.1:8000
           SETUP_TOKEN: ci-setup-token
+          ACCESS_TOKEN: ci-door-key
         run: node e2e/smoke.mjs
 
       - name: The app actually does things
@@ -194,6 +212,7 @@ jobs:
         env:
           APP_URL: http://127.0.0.1:8000
           SETUP_TOKEN: ci-setup-token
+          ACCESS_TOKEN: ci-door-key
         run: node e2e/functional.mjs
 
       - name: Container logs on failure

@@ -62,6 +62,77 @@ def _clean_environment(monkeypatch):
     yield
 
 
+class _LoopbackScope:
+    """ASGI shim that makes a request look like it came from 127.0.0.1.
+
+    Starlette hardcodes TestClient's peer as ("testclient", 50000) inside the
+    transport — there is no constructor parameter — so the scope is rewritten
+    here instead.
+
+    This is honest rather than a cheat. The gatekeeper fails closed when
+    ACCESS_TOKEN is unset UNLESS the request arrived on loopback, a deliberately
+    narrow escape hatch for local development that CANNOT be true off the
+    internet: any proxy replaces client.host with its own address. A test client
+    genuinely is local, so this makes the scope match reality.
+
+    The alternative — teaching the gatekeeper to trust a magic hostname — would
+    weaken a security control to suit the tests, which is backwards. Tests that
+    are ABOUT the door set ACCESS_TOKEN, and once it is set loopback is no
+    longer a bypass, so they still exercise the real path.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http":
+            scope = dict(scope)
+            scope["client"] = ("127.0.0.1", 50000)
+        await self.app(scope, receive, send)
+
+
+@pytest.fixture(autouse=True)
+def _testclient_is_loopback(monkeypatch):
+    import starlette.testclient as tc
+    original = tc.TestClient.__init__
+
+    def patched(self, app, *args, **kwargs):
+        return original(self, _LoopbackScope(app), *args, **kwargs)
+
+    monkeypatch.setattr(tc.TestClient, "__init__", patched)
+    yield
+
+
+@pytest.fixture
+def remote_client():
+    """Build a TestClient that presents as a PUBLIC address, not loopback.
+
+    For tests about what a stranger on the internet can reach. Previously this
+    came free because Starlette's synthetic host happens not to be loopback —
+    an accident, not a statement of intent, and one that silently changed
+    meaning the moment the gatekeeper learned about loopback. Ask for it
+    explicitly instead.
+    """
+    import starlette.testclient as tc
+
+    class _RemoteScope:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope.get("type") == "http":
+                scope = dict(scope)
+                scope["client"] = ("203.0.113.7", 44444)   # TEST-NET-3
+            await self.app(scope, receive, send)
+
+    def build(app, **kwargs):
+        # Bypass the autouse loopback shim by constructing the transport around
+        # the remote wrapper directly.
+        return tc.TestClient(_RemoteScope(app), **kwargs)
+
+    return build
+
+
 @pytest.fixture(autouse=True)
 def _reset_rate_limiter():
     """Every test starts with an empty limiter, before and after."""

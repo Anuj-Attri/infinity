@@ -28,34 +28,65 @@ def app_with(monkeypatch, tmp_path):
     """
     def _build(**env: str):
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
-        for k in ("SETUP_TOKEN", "MARK4_DEV_ACCOUNT"):
+        for k in ("SETUP_TOKEN", "MARK4_DEV_ACCOUNT", "ACCESS_TOKEN"):
             monkeypatch.delenv(k, raising=False)
         for k, v in env.items():
             monkeypatch.setenv(k, v)
         # Re-import so module-level env reads (_SETUP_TOKEN, data paths) re-run.
-        import app.paths, app.auth, app.main
+        import app.paths, app.auth, app.gatekeeper, app.main
         importlib.reload(app.paths)
         importlib.reload(app.auth)
+        importlib.reload(app.gatekeeper)
         main = importlib.reload(app.main)
         return TestClient(main.app), main
     return _build
 
 
-# TestClient reports client.host as "testclient" — NOT loopback — which is the
-# same branch a proxied request from the internet lands in. That is what makes
-# these tests meaningful rather than a loopback special case.
+# There are TWO layers in front of first-run setup, and they answer differently
+# on purpose:
+#
+#   remote, no ACCESS_TOKEN            -> 404  the door; nothing here at all
+#   remote, past the door, no SETUP_TOKEN -> 403  the setup gate
+#   loopback, neither configured       -> 200  the local-development hatch
+#
+# Asserting the wrong one passes for the wrong reason. These pin all three.
 
-def test_public_caller_cannot_claim_without_a_token(app_with):
-    client, _ = app_with()
-    r = client.post("/auth/setup", json={"password": "stranger-owns-it"})
-    assert r.status_code == 403, "a stranger claimed the instance"
+def test_a_stranger_gets_nothing_at_all_when_the_door_is_shut(app_with, remote_client):
+    """The outermost layer: no ACCESS_TOKEN configured means an unconfigured
+    deployment answers nothing, so setup is unreachable before it is refused."""
+    _, main = app_with()
+    r = remote_client(main.app).post("/auth/setup", json={"password": "stranger-owns-it"})
+    assert r.status_code == 404, "an unconfigured deployment answered a stranger"
+
+
+def test_past_the_door_a_stranger_still_cannot_claim(app_with, remote_client):
+    """The setup gate itself, reached the only way a stranger could reach it.
+
+    This is the layer that matters if the door key ever leaks: holding it must
+    NOT be enough to take ownership of the instance.
+    """
+    _, main = app_with(ACCESS_TOKEN="door-key")
+    r = remote_client(main.app).post(
+        "/auth/setup",
+        json={"password": "stranger-owns-it"},
+        headers={"X-Access-Token": "door-key"},
+    )
+    assert r.status_code == 403, "the door key alone claimed the instance"
     assert "setup" in r.json()["detail"].lower()
 
 
-def test_status_advertises_that_setup_is_unavailable(app_with):
-    """The UI needs to know, or it shows a form that can only ever fail."""
+def test_a_loopback_developer_can_still_claim_with_no_token(app_with):
+    """The escape hatch that keeps local development configuration-free."""
     client, _ = app_with()
-    body = client.get("/auth/status").json()
+    assert client.post("/auth/setup", json={"password": "abcdef"}).status_code == 200
+
+
+def test_status_advertises_that_setup_is_unavailable(app_with, remote_client):
+    """The UI needs to know, or it shows a form that can only ever fail."""
+    _, main = app_with(ACCESS_TOKEN="door-key")
+    body = remote_client(main.app).get(
+        "/auth/status", headers={"X-Access-Token": "door-key"}
+    ).json()
     assert body["setup_available"] is False
     assert body["setup_token_required"] is False
 

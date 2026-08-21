@@ -4,8 +4,13 @@ import { chromium } from "playwright";
 const LABEL = process.argv[2] || "Console";
 const APP = (process.env.APP_URL || "http://127.0.0.1:5173").replace(/\/+$/, "");
 const PASSWORD = process.env.SMOKE_PASSWORD || "smoke-test-pass";
+const DOOR = process.env.ACCESS_TOKEN || "";
 const b = await chromium.launch();
-const p = await b.newPage({ viewport: { width: 1500, height: 1000 } });
+const _ctx = await b.newContext({
+  viewport: { width: 1500, height: 1000 },
+  ...(DOOR ? { extraHTTPHeaders: { "X-Access-Token": DOOR } } : {}),
+});
+const p = await _ctx.newPage();
 await p.goto(APP, { waitUntil: "networkidle" });
 await p.waitForTimeout(1200);
 if (await p.$('input[placeholder="Device name"]')) {
