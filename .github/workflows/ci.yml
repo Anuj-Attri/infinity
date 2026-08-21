@@ -228,6 +228,16 @@ jobs:
           npm ci --no-audit --no-fund
           npx playwright install --with-deps chromium
 
+      # The door, driven the way a person meets it. Every other browser test
+      # here presents X-Access-Token, which is the CI path — the waitlist path
+      # is /access#<token>, a different code path that shipped untested.
+      - name: The waitlist door works, and only for the right key
+        working-directory: frontend
+        env:
+          APP_URL: http://127.0.0.1:8000
+          ACCESS_TOKEN: ci-door-key
+        run: node e2e/access.mjs
+
       - name: Every tile opens
         working-directory: frontend
         env:
