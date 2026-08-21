@@ -56,5 +56,5 @@ tiktoken>=0.8
 # PyJWT==2.10.1
 
 
-# Dev
-pytest==8.3.4
+# Test/dev dependencies live in requirements-dev.txt and are deliberately
+# NOT installed into the runtime image. See that file for why.

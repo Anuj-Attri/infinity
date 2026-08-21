@@ -24,11 +24,17 @@ jobs:
           # image means CI is green about code that never runs in production.
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
 
       - name: Install
         working-directory: backend
-        run: pip install -r requirements.txt
+        # requirements-dev.txt pulls in requirements.txt, then adds pytest.
+        # The image installs ONLY requirements.txt, so test-only packages never
+        # reach production — and a runtime module that imports one fails here
+        # rather than at container boot.
+        run: pip install -r requirements-dev.txt
 
       - name: Tests
         working-directory: backend

@@ -1,0 +1,14 @@
+# Test-only dependencies. NOT installed into the runtime image.
+#
+# These used to sit under a `# Dev` comment at the bottom of
+# requirements.txt, which the Dockerfile installs wholesale. A comment is
+# not a boundary: the next test-only package would have shipped to
+# production too, and — worse — CI and the image had identical
+# environments, so a stray `import pytest` in a runtime module would have
+# passed CI and then crashed the container on boot.
+#
+# CI installs both files. infra/Dockerfile installs only requirements.txt,
+# which is what makes the seam real rather than advisory.
+-r requirements.txt
+
+pytest==8.3.4
