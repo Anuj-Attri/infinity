@@ -417,3 +417,89 @@ def test_a_refusal_is_distinguishable_from_being_unable(app_mod, monkeypatch):
     assert isinstance(ei.value, E2.EmbedError), (
         "EmbedRefused must stay an EmbedError or every existing handler breaks"
     )
+
+
+# ── the two rough edges, closed ──────────────────────────────────────────────
+
+def test_a_paused_stream_answers_403_not_200_with_an_error_line(app_mod):
+    """stream() is an async generator, so the provider gate fires on the first
+    __anext__ — after StreamingResponse has already committed a 200. The caller
+    saw a successful response whose body happened to contain an error. Spend was
+    stopped either way; only the status code was wrong, and a 200 is a miserable
+    thing to debug."""
+    main, e = app_mod
+    from app.accounts import SINGLE_TENANT
+    from fastapi.testclient import TestClient
+
+    e.set_killswitch(SINGLE_TENANT.id, True, "paused")
+    exempt = {"/chat/stream", "/summarize", "/research", "/plan", "/dispatch/subagent"}
+    main._AUTH_EXEMPT = frozenset(set(main._AUTH_EXEMPT) | exempt)
+    c = TestClient(main.app)
+
+    for path in sorted(exempt):
+        r = c.post(path, json={"message": "hi", "text": "hi", "topic": "hi",
+                               "goal": "hi", "prompt": "hi"})
+        assert r.status_code in (403, 422), f"{path} returned {r.status_code}"
+        if r.status_code == 403:
+            assert r.json().get("killswitch") is True, path
+
+
+def test_every_streaming_route_carries_the_status_code_dependency():
+    """A ratchet. A new streaming route without it silently returns 200-with-an-
+    error-body, which looks like success to every caller."""
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    missing = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            continue
+        returns_stream = any(
+            isinstance(n, ast.Call) and getattr(n.func, "id", "") == "StreamingResponse"
+            for n in ast.walk(node)
+        )
+        if not returns_stream:
+            continue
+        for dec in node.decorator_list:
+            if not isinstance(dec, ast.Call):
+                continue
+            path = dec.args[0].value if dec.args and isinstance(dec.args[0], ast.Constant) else "?"
+            kw = {k.arg for k in dec.keywords}
+            spends = any(
+                isinstance(n, ast.Name) and n.id in {"dispatch_provider_registry", "chat_providers"}
+                for n in ast.walk(node)
+            )
+            if spends and "dependencies" not in kw:
+                missing.append(f"{path} ({node.name})")
+
+    assert not missing, (
+        "streaming route(s) that can spend but have no killswitch dependency: "
+        + ", ".join(missing) +
+        "\nWithout it a paused deployment returns 200 with an error in the body."
+    )
+
+
+def test_a_paused_mission_stops_instead_of_burning_every_retry():
+    """A pause is not a node failure. Killswitched used to fall into the generic
+    handler, so a running mission burned max_attempts on every remaining node —
+    then reported "node failed" rather than "stopped"."""
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "app" / "agent" / "runtime.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name == "_run_node")
+
+    handlers = [h for h in ast.walk(fn) if isinstance(h, ast.ExceptHandler)]
+    names = [getattr(h.type, "id", "") for h in handlers if h.type is not None]
+    assert "Killswitched" in names, (
+        "_run_node does not handle Killswitched explicitly, so a paused mission "
+        "retries every node to exhaustion and misreports as a failure"
+    )
+    ks = next(h for h in handlers if getattr(h.type, "id", "") == "Killswitched")
+    body = ast.dump(ast.Module(body=ks.body, type_ignores=[]))
+    assert "stop_ev" in body, "the killswitch handler does not signal the mission to stop"
+    assert "Stopped" in body, "the killswitch handler does not raise Stopped"

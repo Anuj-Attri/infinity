@@ -23,6 +23,7 @@ import json
 import time
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+from ..entitlements import Killswitched
 from . import store
 from .schemas import MissionSpec, MissionState, NodeSpec, NodeState, Verdict
 
@@ -235,6 +236,18 @@ async def _run_node(st: MissionState, node: NodeSpec,
                 output = await _dispatch_once(st, node, model_id, critique, stop_ev)
             except Stopped:
                 raise
+            except Killswitched as e:
+                # A PAUSE IS NOT A NODE FAILURE, and retrying it is pointless.
+                #
+                # This used to fall into the generic handler below, so a mission
+                # running when the killswitch was flipped burned every remaining
+                # attempt on every remaining node — up to max_attempts x nodes
+                # refusals — then reported "node failed" rather than "stopped".
+                # No money leaked, because every dispatch was refused, but the
+                # mission looked broken instead of paused.
+                ns.error = f"paused: {e.reason}"[:300]
+                stop_ev.set()
+                raise Stopped() from e
             except Exception as e:
                 ns.error = f"{type(e).__name__}: {e}"[:300]
                 continue  # dispatch-level failure → burn an attempt, retry

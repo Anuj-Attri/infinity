@@ -1832,7 +1832,24 @@ async def chat(body: ChatIn) -> ChatOut:
     return ChatOut(reply="".join(parts), model=body.model or "")
 
 
-@app.post("/chat/stream")
+async def _may_spend_dep() -> None:
+    """Route dependency, purely so a paused stream answers 403 and not 200.
+
+    The real gate is at the provider layer and it does stop the spend. But
+    `stream()` is an async generator, so that check fires on the first
+    `__anext__` — by which time StreamingResponse has already committed a 200
+    and the exception handler can no longer change it. The caller then sees a
+    successful response whose body happens to contain an error, which is a
+    miserable thing to debug and a worse thing to show a user.
+
+    A dependency runs before any of that. Not a substitute for the provider
+    gate: this only covers request paths, and a mission already running is on
+    none.
+    """
+    assert_may_spend()
+
+
+@app.post("/chat/stream", dependencies=[Depends(_may_spend_dep)])
 async def chat_stream(body: ChatIn) -> StreamingResponse:
     """Stream the reply as NDJSON. Each line is one JSON object:
         {"delta": "..."}                       — partial text chunk
@@ -2115,7 +2132,7 @@ class SubAgentIn(BaseModel):
     mission_id: str | None = None     # tags spend to a Mission Control run
 
 
-@app.post("/dispatch/subagent")
+@app.post("/dispatch/subagent", dependencies=[Depends(_may_spend_dep)])
 async def dispatch_subagent_route(body: SubAgentIn) -> StreamingResponse:
     """Stream a sub-agent response from OpenRouter as NDJSON.
     Each line is {"delta":"..."} or {"done":true,"model":"..."} or {"error":"..."}.
@@ -3388,7 +3405,7 @@ class SummarizeIn(BaseModel):
     job_id: str = ""
 
 
-@app.post("/summarize")
+@app.post("/summarize", dependencies=[Depends(_may_spend_dep)])
 async def summarize(body: SummarizeIn) -> StreamingResponse:
     """Stream a dispatched summary as NDJSON.
     Each line is {"delta":"..."} or {"done":true,"model":"..."} or {"error":"..."}.
@@ -3495,7 +3512,7 @@ class ResearchIn(BaseModel):
     job_id: str = ""
 
 
-@app.post("/research")
+@app.post("/research", dependencies=[Depends(_may_spend_dep)])
 async def research(body: ResearchIn) -> StreamingResponse:
     """Balanced source-check. NDJSON: stage events + streamed brief. Opaque
     'Research unavailable.' on failure (real cause logged)."""
@@ -3622,7 +3639,7 @@ class PlanIn(BaseModel):
     job_id: str = ""
 
 
-@app.post("/plan")
+@app.post("/plan", dependencies=[Depends(_may_spend_dep)])
 async def plan(body: PlanIn) -> StreamingResponse:
     """Stream a milestone-structured plan (NDJSON {delta}/{done}/{error}).
     Opaque 'Plan unavailable.' on failure; real cause logged."""
