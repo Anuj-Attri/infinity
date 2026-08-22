@@ -255,3 +255,68 @@ def test_a_blank_chunk_does_not_cost_the_note_its_index(vault, monkeypatch):
     out = asyncio.run(vault._embed_many(["real text", "   ", "more text"]))
     assert out[0] is not None and out[2] is not None
     assert out[1] is None, "a blank chunk was given a vector"
+
+
+# ── a failed search must not look like an empty vault ────────────────────────
+
+def test_a_rate_limited_search_says_so_instead_of_returning_nothing(vault, monkeypatch):
+    """The failure that made a working index look empty.
+
+    If the QUERY cannot be embedded, retrieve() falls back to keyword-only — and
+    a question phrased in words the note does not contain matches nothing. The
+    user sees an empty result and concludes the note is missing. It is not; the
+    search is. This is the difference between "no results" and "the search did
+    not run", which the API must not blur.
+    """
+    fake_provider(monkeypatch, vault)
+    note(vault, "knots.md", "The bowline makes a fixed loop that will not slip.")
+    asyncio.run(vault.scan(force=True))
+
+    from app.providers import embeddings as E
+
+    async def _rate_limited(texts, *, input_type="document"):
+        raise E.EmbedError("Voyage still HTTP 429 after 5 attempts")
+    monkeypatch.setattr(E, "embed_texts", _rate_limited)
+
+    async def _rate_limited_one(text, *, input_type="document"):
+        raise E.EmbedError("Voyage still HTTP 429 after 5 attempts")
+    import reactor.memory.embed as shim
+    monkeypatch.setattr(shim, "embed_text", _rate_limited_one)
+
+    out = asyncio.run(vault.vault_search(q="a loop that will not tighten", k=3))
+    assert out.get("degraded") is True, "a search that could not run reported success"
+    assert "429" in out["degraded_reason"]
+
+
+def test_a_healthy_search_is_not_marked_degraded(vault, monkeypatch):
+    """The flag has to mean something, so it must not be always-on."""
+    fake_provider(monkeypatch, vault)
+    note(vault, "knots.md", "The bowline makes a fixed loop that will not slip.")
+    asyncio.run(vault.scan(force=True))
+    out = asyncio.run(vault.vault_search(q="bowline", k=3))
+    assert "degraded" not in out
+
+
+def test_repeated_failures_keep_being_logged(vault, monkeypatch, capsys):
+    """The first version logged once per PROCESS, so an ongoing outage went
+    silent after one line — the exact trap this codebase keeps hitting."""
+    vault._embed_fail.update(reason=None, at=0.0, logged=0.0)
+    vault._note_embed_failure(RuntimeError("first"))
+    assert "first" in capsys.readouterr().out
+
+    # Same minute: suppressed, but still RECORDED so callers can report it.
+    vault._note_embed_failure(RuntimeError("second"))
+    assert "second" not in capsys.readouterr().out
+    assert "second" in (vault.last_embed_failure() or "")
+
+    # A minute later it speaks again.
+    vault._embed_fail["logged"] = 0.0
+    vault._note_embed_failure(RuntimeError("third"))
+    assert "third" in capsys.readouterr().out
+
+
+def test_a_stale_failure_stops_being_reported(vault):
+    """A rate limit five minutes ago should not mark today's search degraded."""
+    import time as _t
+    vault._embed_fail.update(reason="ancient", at=_t.time() - 3600, logged=0.0)
+    assert vault.last_embed_failure() is None

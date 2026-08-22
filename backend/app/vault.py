@@ -288,7 +288,39 @@ def _chunk_text(text: str) -> list[str]:
     return out
 
 
-_embed_warned = False
+# Last embedding failure, and when it was last logged. NOT a one-shot flag:
+# the first version logged once per process, which meant a transient rate limit
+# was reported once and then failed silently forever after — the exact
+# "let a failure be silent" trap this codebase keeps falling into.
+_embed_fail: dict[str, Any] = {"reason": None, "at": 0.0, "logged": 0.0}
+_EMBED_LOG_EVERY_S = 60.0
+
+
+def last_embed_failure() -> str | None:
+    """Why the most recent embed failed, if it was recent enough to matter."""
+    if not _embed_fail["reason"]:
+        return None
+    if time.time() - float(_embed_fail["at"]) > 300:
+        return None
+    return str(_embed_fail["reason"])
+
+
+def _note_embed_failure(e: Exception) -> None:
+    """Record it, and log at most once a minute.
+
+    Rate-limited rather than one-shot: a per-minute provider cap produces a
+    steady stream of identical failures, and both extremes are wrong — logging
+    every one floods the log, logging only the first makes an ongoing outage
+    invisible after the first line.
+    """
+    now = time.time()
+    _embed_fail["reason"] = str(e)
+    _embed_fail["at"] = now
+    if now - float(_embed_fail["logged"]) >= _EMBED_LOG_EVERY_S:
+        _embed_fail["logged"] = now
+        print(f"[vault] embedding failed — affected chunks are stored WITHOUT "
+              f"vectors and search falls back to full text. "
+              f"POST /vault/reindex to fill them in. ({e})", flush=True)
 
 
 async def _embed(text: str, *, input_type: str = "document") -> bytes | None:
@@ -305,21 +337,16 @@ async def _embed(text: str, *, input_type: str = "document") -> bytes | None:
     stored document than as a question about one, so searching must pass
     "query" or every result is slightly wrong in a way nothing surfaces.
     """
-    global _embed_warned
     try:
         from reactor.memory.embed import embed_text
         v = await embed_text(text, input_type=input_type)
         n = float(np.linalg.norm(v))
         if n <= 0:
             return None
+        _embed_fail["reason"] = None
         return (v / n).astype(np.float32).tobytes()
     except Exception as e:
-        if not _embed_warned:
-            _embed_warned = True
-            print(f"[vault] embeddings unavailable, chunks are being stored "
-                  f"WITHOUT vectors — search falls back to full text. "
-                  f"Run /vault/reindex once a provider is configured. ({e})",
-                  flush=True)
+        _note_embed_failure(e)
         return None
 
 
@@ -335,7 +362,6 @@ async def _embed_many(texts: list[str]) -> list[bytes | None]:
     Empty chunks are held out rather than sent: the provider refuses an empty
     string, and one blank chunk must not cost the note its entire index.
     """
-    global _embed_warned
     if not texts:
         return []
     idx = [i for i, t in enumerate(texts) if (t or "").strip()]
@@ -346,12 +372,7 @@ async def _embed_many(texts: list[str]) -> list[bytes | None]:
     try:
         vecs = await embed_texts([texts[i].strip() for i in idx], input_type="document")
     except Exception as e:
-        if not _embed_warned:
-            _embed_warned = True
-            print(f"[vault] embeddings unavailable, chunks are being stored "
-                  f"WITHOUT vectors — search falls back to full text. "
-                  f"Run /vault/reindex once a provider is configured. ({e})",
-                  flush=True)
+        _note_embed_failure(e)
         return [None] * len(texts)
 
     out: list[bytes | None] = [None] * len(texts)
@@ -1040,11 +1061,27 @@ async def vault_search(q: str = Query(..., min_length=1, max_length=200),
                        k: int = Query(10, ge=1, le=30)) -> dict:
     await scan()
     hits = await retrieve(q, k)
-    return {"items": [{"node_id": h["node_id"], "slug": h.get("slug", ""),
-                       "title": h.get("title", ""),
-                       "domain": h.get("domain", []),
-                       "snippet": h["text"][:240],
-                       "score": round(h.get("rrf", 0.0), 4)} for h in hits]}
+    out = {"items": [{"node_id": h["node_id"], "slug": h.get("slug", ""),
+                      "title": h.get("title", ""),
+                      "domain": h.get("domain", []),
+                      "snippet": h["text"][:240],
+                      "score": round(h.get("rrf", 0.0), 4)} for h in hits]}
+    # SAY WHEN HALF THE SEARCH DID NOT RUN.
+    #
+    # If the query could not be embedded, retrieve() silently falls back to
+    # keyword-only — and for a question phrased in words the note does not
+    # contain, keyword finds nothing. The user sees an empty result and
+    # reasonably concludes their note is missing. It is not; the search was.
+    # A provider rate limit is the common cause and it is transient, so this
+    # says so rather than looking like an empty vault.
+    why = last_embed_failure()
+    if why:
+        out["degraded"] = True
+        out["degraded_reason"] = (
+            "Semantic search was unavailable for this query, so only keyword "
+            f"matching ran. This is usually a transient provider rate limit. ({why})"
+        )
+    return out
 
 
 @router.get("/stats")
