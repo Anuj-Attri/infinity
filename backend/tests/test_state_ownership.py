@@ -67,34 +67,10 @@ UNOWNED: set[str] = {
     "app/vault.py:backfill_embeddings",
     "app/vault.py:vault_embeddings_status",
 
-    # --- Memory. Recall would surface another account's durable facts into
-    # the model's context — the worst of these, because it is invisible: it
-    # shows up as the assistant "knowing" something it was never told. ----
-    "reactor/memory/store.py:add_memory",
-    "reactor/memory/store.py:update_memory",
-    "reactor/memory/store.py:delete_memory",
-    "reactor/memory/store.py:list_memories",
-    "reactor/memory/store.py:search_memories",
-    "reactor/memory/store.py:list_by_type",
-    "reactor/memory/store.py:graph_memories",
-    "reactor/memory/store.py:memories_needing_embedding",
-    "reactor/memory/store.py:set_embedding",
-    "reactor/memory/store.py:embedding_coverage",
-
-    # --- Ingested documents. Same leak, with the document text attached. --
-    "reactor/memory/store.py:doc_exists",
-    "reactor/memory/store.py:delete_doc_by_source",
-    "reactor/memory/store.py:clear_all_doc_chunks",
-    "reactor/memory/store.py:add_doc_chunk",
-    "reactor/memory/store.py:search_doc_chunks",
-    "reactor/memory/store.py:ranked_chunks",
-    "reactor/memory/store.py:list_docs",
-    "reactor/memory/store.py:first_doc_chunks",
-    "reactor/memory/store.py:graph_doc_chunks",
-
-    # --- Conversation transcript. --------------------------------------
-    "reactor/memory/store.py:add_turn",
-    "reactor/memory/store.py:recent_turns",
+    # --- Memory, documents and transcript: MIGRATED 2026-08-22. Every table
+    # carries owner_account_id + org_id, every read filters on it, and every
+    # write supplies it. doc_chunks and turns were empty and unwired, so those
+    # were free — which is exactly why they were done now rather than later.
 
     # --- Missions: MIGRATED 2026-08-22. MissionState carries account_id,
     # store.load/recent/prune filter on it, and runtime.get applies the same
@@ -120,6 +96,11 @@ DELIBERATELY_GLOBAL: dict[str, str] = {
         "stuck in 'running' forever is worse than a sweep that spans them. It "
         "moves no data between accounts — it only closes out what was already "
         "each owner's.",
+    "reactor/memory/store.py:__init__":
+        "Schema creation and the migration that adds the owner columns. About "
+        "the tables rather than any row in them, so it necessarily spans "
+        "accounts — it is where existing rows are backfilled to the single "
+        "tenant.",
     "app/agent/store.py:_db":
         "Schema creation and migration, which is by definition about the table "
         "rather than about any row in it. This is where the account_id column "
@@ -197,17 +178,35 @@ def test_the_backlog_does_not_rot():
 def test_the_scanner_can_actually_see_something():
     """Guard against a silently-blind check.
 
-    If the parse broke or the paths moved, both tests above would pass by
-    finding nothing at all — the worst outcome, because it reports safety that
-    was never verified.
-    """
-    found = _scan()
-    assert len(found) > 20, (
-        f"the scan found only {len(found)} state-touching functions; it is "
-        f"probably broken rather than the codebase being clean"
-    )
-    assert any(p.startswith("app/vault.py:") for p in found)
+    If the parse broke or the paths moved, the two ratchets above would report
+    "nothing new" and "nothing stale" by finding nothing at all — the worst
+    outcome, because it reports safety that was never verified.
 
+    This used to assert a minimum COUNT, calibrated when the backlog was 45.
+    That is a test that needs recalibrating every time the backlog shrinks,
+    which means it fails on progress — so it would eventually be loosened until
+    it meant nothing. Instead it feeds the detector two synthetic functions and
+    checks it separates them, which stays true no matter how much is migrated.
+    """
+    sample = ast.parse(
+        '''
+def unowned(x):
+    return db.execute("SELECT 1 FROM things")
+
+def owned(x, *, account_id):
+    return db.execute("SELECT 1 FROM things WHERE owner=?", (account_id,))
+
+def not_state(x):
+    return x + 1
+'''
+    )
+    fns = {n.name: n for n in sample.body}
+    assert _touches_state(fns["unowned"]) and not _names_an_owner(fns["unowned"])
+    assert _touches_state(fns["owned"]) and _names_an_owner(fns["owned"])
+    assert not _touches_state(fns["not_state"]), "a pure function was called stateful"
+
+    # And it must still be pointed at real source, not an empty directory.
+    assert _scan(), "the scan found nothing at all — it is looking in the wrong place"
 
 def test_the_entitlement_store_already_names_its_owner():
     """The newest state module was written account-keyed from the start, which

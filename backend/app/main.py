@@ -84,7 +84,8 @@ else:
     print(f"[main] no {_ENV_FILE} — using the process environment (expected in a container)",
           flush=True)
 
-import asyncio  # noqa: E402
+import asyncio
+from functools import partial  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import secrets  # noqa: E402
@@ -942,6 +943,19 @@ def _check_setup_allowed(request: Request, supplied: str | None) -> None:
     )
 
 
+def _account_id() -> str:
+    """Whose state this request touches.
+
+    One tenant today, and the app-level auth dependency has already verified the
+    session before any handler runs — so naming the single account is accurate
+    rather than a guess. A function, not a constant, so that when real identity
+    lands this becomes a request dependency and every call site below is already
+    asking the right question.
+    """
+    from .accounts import SINGLE_TENANT
+    return SINGLE_TENANT.id
+
+
 @app.get("/auth/status")
 def auth_status(request: Request) -> dict[str, Any]:
     """Unauthenticated. First-run UI reads this to choose setup vs login."""
@@ -1252,7 +1266,7 @@ async def _build_chat_messages(body: ChatIn) -> tuple[list[dict], list[Memory], 
         # gate so irrelevant facts don't leak into unrelated turns (e.g. a
         # vegetarianism fact bleeding into a notes-summary). Facts stay in the
         # DB; the gate only trims this turn's injection.
-        profiles = await asyncio.to_thread(MEMORY.list_by_type, "profile", PROFILE_MAX)
+        profiles = await asyncio.to_thread(partial(MEMORY.list_by_type, account_id=_account_id()), "profile", PROFILE_MAX)
         profiles = await _filter_relevant_profile_facts(body.message, profiles, body)
         for m in profiles:
             profile_lines.append(f"- {m.text}")
@@ -1261,7 +1275,7 @@ async def _build_chat_messages(body: ChatIn) -> tuple[list[dict], list[Memory], 
         # EPISODIC — cued by semantic similarity to this turn's message.
         if qvec is not None:
             ep_hits = await asyncio.to_thread(
-                MEMORY.search_memories, qvec, 5, 0.45, "episodic"
+                partial(MEMORY.search_memories, account_id=_account_id()), qvec, 5, 0.45, "episodic"
             )
             for m in ep_hits:
                 episodic_lines.append(f"- {m.text}")
@@ -1405,7 +1419,7 @@ async def _build_chat_messages(body: ChatIn) -> tuple[list[dict], list[Memory], 
     # files are queryable, so doc questions never reach query_documents. List
     # the ingested sources and steer their content questions to RAG.
     try:
-        _docs = await asyncio.to_thread(MEMORY.list_docs)
+        _docs = await asyncio.to_thread(partial(MEMORY.list_docs, account_id=_account_id()))
     except Exception:
         _docs = []
     if _docs:
@@ -1614,7 +1628,7 @@ async def _maybe_save_auto_memory(body: ChatIn) -> dict | None:
         kind, text = fact
 
         # Dedup against existing memories — case-insensitive exact text match.
-        existing = await asyncio.to_thread(MEMORY.list_memories)
+        existing = await asyncio.to_thread(partial(MEMORY.list_memories, account_id=_account_id()))
         norm = text.strip().lower()
         if any((m.text or "").strip().lower() == norm for m in existing):
             return None
@@ -1628,7 +1642,7 @@ async def _maybe_save_auto_memory(body: ChatIn) -> dict | None:
         m = await asyncio.to_thread(
             MEMORY.add_memory, text,
             type=kind, source="auto", confidence=0.85,
-            entities=[], embedding=vec,
+            entities=[], embedding=vec, account_id=_account_id(),
         )
         return {
             "type":  m.type,
@@ -2454,7 +2468,7 @@ async def narrator_observe(body: NarratorIn) -> dict:
                 m = await asyncio.to_thread(
                     MEMORY.add_memory, boundary_text,
                     type="profile", source="auto", confidence=0.9,
-                    entities=[], embedding=vec,
+                    entities=[], embedding=vec, account_id=_account_id(),
                 )
                 boundary_memory_id = m.id
                 print(f"[NARRATOR] boundary saved id={m.id}: {boundary_text!r}", flush=True)
@@ -2550,7 +2564,7 @@ class MemorySearchIn(BaseModel):
 
 @app.get("/memory")
 async def memory_list() -> dict:
-    items = await asyncio.to_thread(MEMORY.list_memories)
+    items = await asyncio.to_thread(partial(MEMORY.list_memories, account_id=_account_id()))
     return {"items": [m.to_dict() for m in items]}
 
 
@@ -2563,7 +2577,7 @@ async def memory_embeddings_status() -> dict:
     them is real and was invisible.
     """
     from .providers.embeddings import active_model, status
-    cov = await asyncio.to_thread(MEMORY.embedding_coverage, active_model())
+    cov = await asyncio.to_thread(partial(MEMORY.embedding_coverage, account_id=_account_id()), active_model())
     return {"provider": status(), **cov,
             "hint": None if cov["needing_backfill"] == 0 else
                     "POST /memory/reindex to embed the rest"}
@@ -2586,7 +2600,7 @@ async def memory_reindex() -> dict:
 
     done = 0
     while True:
-        batch = await asyncio.to_thread(MEMORY.memories_needing_embedding, model, 128)
+        batch = await asyncio.to_thread(partial(MEMORY.memories_needing_embedding, account_id=_account_id()), model, 128)
         batch = [(mid, t) for mid, t in batch if (t or "").strip()]
         if not batch:
             break
@@ -2595,7 +2609,7 @@ async def memory_reindex() -> dict:
         except EmbedError as e:
             raise HTTPException(status_code=503, detail=str(e))
         for (mid, _), v in zip(batch, vecs):
-            await asyncio.to_thread(MEMORY.set_embedding, mid, v, model)
+            await asyncio.to_thread(partial(MEMORY.set_embedding, account_id=_account_id()), mid, v, model)
         done += len(batch)
         if len(batch) < 128:
             break
@@ -2616,7 +2630,7 @@ async def memory_create(body: MemoryIn) -> dict:
     m = await asyncio.to_thread(
         MEMORY.add_memory, text,
         type=body.type, source="user", confidence=body.confidence,
-        entities=body.entities, embedding=vec,
+        entities=body.entities, embedding=vec, account_id=_account_id(),
     )
     return {"item": m.to_dict()}
 
@@ -2633,7 +2647,7 @@ async def memory_update(mid: str, body: MemoryPatch) -> dict:
     m = await asyncio.to_thread(
         MEMORY.update_memory, mid,
         text=body.text, type=body.type, confidence=body.confidence,
-        entities=body.entities, embedding=new_vec,
+        entities=body.entities, embedding=new_vec, account_id=_account_id(),
     )
     if not m:
         raise HTTPException(status_code=404, detail=f"memory {mid} not found")
@@ -2642,7 +2656,7 @@ async def memory_update(mid: str, body: MemoryPatch) -> dict:
 
 @app.delete("/memory/{mid}")
 async def memory_delete(mid: str) -> dict:
-    ok = await asyncio.to_thread(MEMORY.delete_memory, mid)
+    ok = await asyncio.to_thread(partial(MEMORY.delete_memory, account_id=_account_id()), mid)
     if not ok:
         raise HTTPException(status_code=404, detail=f"memory {mid} not found")
     return {"ok": True}
@@ -2654,7 +2668,7 @@ async def memory_search(body: MemorySearchIn) -> dict:
         qvec = await embed_text(body.query, input_type="query")
     except EmbedError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    hits = await asyncio.to_thread(MEMORY.search_memories, qvec, body.limit, 0.4)
+    hits = await asyncio.to_thread(partial(MEMORY.search_memories, account_id=_account_id()), qvec, body.limit, 0.4)
     return {"items": [m.to_dict() for m in hits]}
 
 
