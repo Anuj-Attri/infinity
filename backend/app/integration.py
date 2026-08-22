@@ -49,6 +49,19 @@ class _MissionRunIn(BaseModel):
     max_concurrency: int = 3
 
 
+def _account_id() -> str:
+    """Whose missions these are.
+
+    Today there is exactly one tenant, and the app-level auth dependency has
+    already verified the session before any of these handlers run — so naming
+    the single account here is accurate, not a guess. It is a FUNCTION rather
+    than a constant so that when real identity lands, this becomes a request
+    dependency and every call site below is already asking the right question.
+    """
+    from .accounts import SINGLE_TENANT
+    return SINGLE_TENANT.id
+
+
 @_extra.post("/mission/run")
 async def mission_run(body: _MissionRunIn) -> dict:
     if not mission_runtime.ready():
@@ -66,19 +79,19 @@ async def mission_run(body: _MissionRunIn) -> dict:
         spec = MissionSpec(title=(body.title or "Mission").strip()[:60], goal=body.goal,
                            model=body.model, nodes=nodes,
                            max_concurrency=max(1, min(5, body.max_concurrency)))
-        return mission_runtime.start(spec)
+        return mission_runtime.start(spec, account_id=_account_id())
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)[:200])
 
 
 @_extra.get("/mission/recent")
 async def mission_recent(limit: int = Query(20, ge=1, le=100)) -> dict:
-    return {"items": mission_store.recent(limit)}
+    return {"items": mission_store.recent(limit, account_id=_account_id())}
 
 
 @_extra.get("/mission/{mission_id}")
 async def mission_get(mission_id: str) -> dict:
-    snap = mission_runtime.get(mission_id)
+    snap = mission_runtime.get(mission_id, account_id=_account_id())
     if snap is None:
         raise HTTPException(status_code=404, detail="unknown mission")
     return snap
@@ -86,7 +99,7 @@ async def mission_get(mission_id: str) -> dict:
 
 @_extra.get("/mission/{mission_id}/events")
 async def mission_events(mission_id: str) -> StreamingResponse:
-    if mission_runtime.get(mission_id) is None:
+    if mission_runtime.get(mission_id, account_id=_account_id()) is None:
         raise HTTPException(status_code=404, detail="unknown mission")
 
     async def gen():
@@ -98,7 +111,7 @@ async def mission_events(mission_id: str) -> StreamingResponse:
 
 @_extra.post("/mission/{mission_id}/stop")
 async def mission_stop(mission_id: str) -> dict:
-    return {"stopped": mission_runtime.stop(mission_id)}
+    return {"stopped": mission_runtime.stop(mission_id, account_id=_account_id())}
 
 
 # ── Skills ───────────────────────────────────────────────────────────────────

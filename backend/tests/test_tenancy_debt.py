@@ -35,14 +35,16 @@ APP = Path(__file__).resolve().parents[1] / "app"
 # ---------------------------------------------------------------------------
 
 # route -> what an attacker gets once there is more than one tenant.
+# MIGRATED 2026-08-22 — no longer id-only, so no longer listed:
+#   /mission/{mission_id}         — store.load() filters on account_id, and
+#                                   runtime.get() applies the same predicate to
+#                                   its in-process cache as the SQL does.
+#   /mission/{mission_id}/events  — same check before the stream opens.
+#   /mission/{mission_id}/stop    — the write. Ownership checked against the
+#                                   live state, which is where a RUNNING
+#                                   mission always is.
+# See backend/tests/test_mission_ownership.py.
 UNSCOPED_BY_ID: dict[str, str] = {
-    "/mission/{mission_id}":
-        "Full mission state including the synthesised output. Checks only that "
-        "the mission EXISTS.",
-    "/mission/{mission_id}/events":
-        "Live NDJSON stream of another account's mission as it runs.",
-    "/mission/{mission_id}/stop":
-        "Kills another account's running mission. A write, not just a read.",
     "/vault/node/{node_id}":
         "A single vault node by id — the knowledge base is the product, and "
         "this reads from it without asking whose it is.",

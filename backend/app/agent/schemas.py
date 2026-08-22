@@ -204,6 +204,11 @@ class NodeState(BaseModel):
 
 class MissionState(BaseModel):
     id: str
+    # WHOSE mission. Carried on the state rather than passed alongside it,
+    # because _emit() persists on every transition and threading an account
+    # through all of those would be a lot of plumbing to express one fact that
+    # never changes for the life of the mission.
+    account_id: str = ""
     title: str
     goal: str
     status: MissionStatus = "awaiting_approval"
@@ -215,9 +220,10 @@ class MissionState(BaseModel):
     updated_at: float = Field(default_factory=time.time)
 
     @classmethod
-    def from_spec(cls, spec: MissionSpec) -> "MissionState":
+    def from_spec(cls, spec: MissionSpec, *, account_id: str = "") -> "MissionState":
         return cls(
             id=spec.id,
+            account_id=account_id,
             title=spec.title,
             goal=spec.goal,
             spec=spec,

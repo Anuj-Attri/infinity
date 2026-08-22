@@ -107,21 +107,28 @@ async def events(mission_id: str) -> AsyncIterator[dict]:
             _subscribers.pop(mission_id, None)
 
 
-def get(mission_id: str) -> dict | None:
+def get(mission_id: str, *, account_id: str) -> dict | None:
+    """A mission, if it is THIS account's.
+
+    The in-process cache is checked first for speed, so it must apply the same
+    predicate the database does — otherwise the memory path would answer a
+    question the disk path refuses, and the leak would appear only while a
+    mission happened to be hot.
+    """
     st = _states.get(mission_id)
     if st is not None:
-        return st.snapshot()
-    loaded = store.load(mission_id)
+        return st.snapshot() if st.account_id == account_id else None
+    loaded = store.load(mission_id, account_id=account_id)
     return loaded.snapshot() if loaded else None
 
 
-def start(spec: MissionSpec) -> dict:
+def start(spec: MissionSpec, *, account_id: str) -> dict:
     """Validate, persist, launch. Raises ValueError on a bad graph BEFORE
     anything is dispatched (fail-closed)."""
     if not ready():
         raise RuntimeError("runtime not initialized")
     spec.topo_layers()  # cycle check — raises ValueError
-    st = MissionState.from_spec(spec)
+    st = MissionState.from_spec(spec, account_id=account_id)
     st.status = "running"
     _emit(st)
     stop_ev = asyncio.Event()
@@ -133,7 +140,16 @@ def start(spec: MissionSpec) -> dict:
     return st.snapshot()
 
 
-def stop(mission_id: str) -> bool:
+def stop(mission_id: str, *, account_id: str) -> bool:
+    """Stop a running mission — YOURS.
+
+    A write, so this was the worst of the id-addressed routes: knowing an id was
+    enough to kill someone else's run mid-flight. Ownership is checked against
+    the live state, which is where a RUNNING mission always is.
+    """
+    st = _states.get(mission_id)
+    if st is None or st.account_id != account_id:
+        return False
     ev = _stops.get(mission_id)
     if ev is None:
         return False

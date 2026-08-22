@@ -96,13 +96,10 @@ UNOWNED: set[str] = {
     "reactor/memory/store.py:add_turn",
     "reactor/memory/store.py:recent_turns",
 
-    # --- Missions. /mission/{id} would load someone else's run, including
-    # its prompts and outputs. ------------------------------------------
-    "app/agent/store.py:recover_interrupted",
-    "app/agent/store.py:_write",
-    "app/agent/store.py:load",
-    "app/agent/store.py:recent",
-    "app/agent/store.py:prune",
+    # --- Missions: MIGRATED 2026-08-22. MissionState carries account_id,
+    # store.load/recent/prune filter on it, and runtime.get applies the same
+    # predicate to its in-process cache as the database does — otherwise the
+    # hot path would answer a question the cold path refuses. Nothing left here.
 
     # --- Not a leak, listed so the scan stays exhaustive rather than
     # selective. -------------------------------------------------------
@@ -117,6 +114,16 @@ UNOWNED: set[str] = {
 # not do its job.
 # ---------------------------------------------------------------------------
 DELIBERATELY_GLOBAL: dict[str, str] = {
+    "app/agent/store.py:recover_interrupted":
+        "A crash does not respect tenancy. Every mission the dead process was "
+        "running is stranded whoever owns it, and leaving other accounts' work "
+        "stuck in 'running' forever is worse than a sweep that spans them. It "
+        "moves no data between accounts — it only closes out what was already "
+        "each owner's.",
+    "app/agent/store.py:_db":
+        "Schema creation and migration, which is by definition about the table "
+        "rather than about any row in it. This is where the account_id column "
+        "is added and existing rows are backfilled to the single tenant.",
     "app/entitlements.py:all_switched_off":
         "An operator view: 'which accounts are currently stopped'. Scoping it to "
         "one account would make it unable to answer the only question it exists "
