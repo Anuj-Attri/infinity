@@ -151,6 +151,33 @@ def _subsystems() -> list[Subsystem]:
         unblock="M5: pgvector search behind VISIBILITY_PREDICATE, with RLS live.",
     ))
 
+    # --- killswitch ---------------------------------------------------------
+    try:
+        from . import entitlements
+        from .accounts import SINGLE_TENANT
+        ks = entitlements.status(SINGLE_TENANT.id)
+    except Exception as e:  # pragma: no cover - import guard
+        ks = {"killswitch": False, "reason": f"unavailable ({e})"}
+    stopped = bool(ks.get("killswitch"))
+    out.append(Subsystem(
+        id="killswitch", name="Spend killswitch",
+        # "ok" when NOT engaged. Everywhere else in this list "off" means a
+        # feature you could switch on and probably should — and it is required
+        # to name the step that would do it. This control inverts that: not
+        # engaged is the desired state and there is nothing to unblock, so
+        # reporting "off" here would read as a missing feature and would owe an
+        # unblock step it does not have.
+        status="blocked" if stopped else "ok",
+        detail=(f"STOPPED — every model and embedding call is refused. "
+                f"Reason given: {ks.get('reason') or '(none)'}"
+                if stopped else
+                "Armed and not engaged. Spending is allowed. Checked at the "
+                "provider layer, so it also stops missions already running in "
+                "the background — not just new requests."),
+        unblock=("POST /admin/killswitch {\"on\": false} to resume."
+                 if stopped else None),
+    ))
+
     # --- accounts -----------------------------------------------------------
     dev_account = _is_set("MARK4_DEV_ACCOUNT")
     out.append(Subsystem(
@@ -259,6 +286,41 @@ def _subsystems() -> list[Subsystem]:
     ))
 
     return out
+
+
+class KillswitchIn(BaseModel):
+    on: bool
+    reason: str = ""
+
+
+@router.get("/killswitch")
+async def killswitch_get() -> dict[str, Any]:
+    """Is spending currently stopped, and why."""
+    from . import entitlements
+    from .accounts import SINGLE_TENANT
+    return {**entitlements.status(SINGLE_TENANT.id),
+            "stopped_accounts": entitlements.all_switched_off()}
+
+
+@router.post("/killswitch")
+async def killswitch_set(body: KillswitchIn) -> dict[str, Any]:
+    """Stop or resume everything that costs money. Effective immediately.
+
+    There is nothing to restart and no job to wait for: the flag is read from
+    disk on every spend, so the very next model call sees it. That is the whole
+    design — a killswitch that takes a minute to apply is not one.
+
+    Reading existing data, signing in and this console all keep working while it
+    is on. A switch that makes the app look crashed is a switch nobody dares
+    use, and the point is to stop spend, not to lock the owner out.
+
+    Gated by the app-level auth dependency like every other /admin route. It
+    becomes owner-only at M3, when there is more than one person who could call
+    it.
+    """
+    from . import entitlements
+    from .accounts import SINGLE_TENANT
+    return entitlements.set_killswitch(SINGLE_TENANT.id, body.on, body.reason)
 
 
 @router.get("/diagnostics", response_model=Diagnostics)

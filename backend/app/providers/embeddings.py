@@ -155,6 +155,16 @@ async def embed_texts(texts: list[str], *, input_type: InputType = "document") -
     if not key:
         raise EmbedError(_NO_PROVIDER)
 
+    # KILLSWITCH. Voyage bills per token, and a vault re-index is the single
+    # largest burst of spend the app can make — so it must be stoppable. Raised
+    # as EmbedError so existing callers already handle it: the chunk is stored
+    # without a vector and /vault/reindex fills it in once spending resumes.
+    from ..entitlements import Killswitched, assert_may_spend
+    try:
+        assert_may_spend()
+    except Killswitched as e:
+        raise EmbedError(f"embedding refused: {e.reason}") from e
+
     # Voyage rejects empty strings. Keep positions stable so callers can zip
     # results back onto their inputs.
     cleaned = [(t or "").strip() for t in texts]

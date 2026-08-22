@@ -166,6 +166,11 @@ class OpenRouterProvider:
         temperature: float = 0.5,
         max_tokens: int = 2048,
     ) -> str:
+        # KILLSWITCH. Here rather than only in the request dependency,
+        # because a mission started before the flip keeps running in a
+        # background task and would keep billing on no request path at all.
+        from ..entitlements import assert_may_spend
+        assert_may_spend()
         payload = {
             "model": model,
             "messages": messages,
@@ -205,6 +210,11 @@ class OpenRouterProvider:
         modalities: list[str],
         max_tokens: int = 4096,
     ) -> dict[str, Any]:
+        # KILLSWITCH. Here rather than only in the request dependency,
+        # because a mission started before the flip keeps running in a
+        # background task and would keep billing on no request path at all.
+        from ..entitlements import assert_may_spend
+        assert_may_spend()
         if "audio" in modalities:
             return await self._generate_audio_stream(messages, model, modalities, max_tokens)
         return await self._generate_sync(messages, model, modalities, max_tokens)
@@ -306,6 +316,11 @@ class OpenRouterProvider:
         temperature: float = 0.5,
         max_tokens: int = 2048,
     ) -> AsyncIterator[str]:
+        # KILLSWITCH. Here rather than only in the request dependency,
+        # because a mission started before the flip keeps running in a
+        # background task and would keep billing on no request path at all.
+        from ..entitlements import assert_may_spend
+        assert_may_spend()
         payload = {
             "model":       model,
             "messages":    messages,

@@ -102,7 +102,8 @@ from fastapi.responses import JSONResponse, StreamingResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from . import auth as auth_layer  # noqa: E402
-from .accounts import NotAuthenticated  # noqa: E402
+from .accounts import NotAuthenticated
+from .entitlements import Killswitched  # noqa: E402
 
 # NOT IMPORTED IN MARK 4 (and the reason the local lane below is gone):
 #   reactor.providers.ollama_local  — deleted; Ollama is out of scope (AGENTS.md)
@@ -383,6 +384,21 @@ _BOOTED_AT = time.time()
 async def _not_authenticated(request: Request, exc: NotAuthenticated) -> JSONResponse:
     """No session resolves to 401 — never to a default account."""
     return JSONResponse(status_code=401, content={"detail": "Not authenticated."})
+
+
+@app.exception_handler(Killswitched)
+async def _killswitched(request: Request, exc: Killswitched) -> JSONResponse:
+    """A paused deployment is a 403 with a reason, never a 500.
+
+    A 500 reads as "we broke" and sends the owner looking for a bug. This is a
+    deliberate operator action, so the response says so and repeats the reason
+    they gave, which is the only thing that makes the pause diagnosable from the
+    outside.
+    """
+    return JSONResponse(
+        status_code=403,
+        content={"detail": exc.reason, "killswitch": True},
+    )
 
 
 # Backstop: an UNHANDLED exception is rendered by Starlette's outermost error

@@ -80,10 +80,25 @@ DEV_ACCOUNT = Account(
 )
 
 
+# The ONE account this deployment serves while authentication is a single master
+# password. This is not a placeholder for "anybody" — it is the honest name for
+# the situation: there is exactly one tenant, and its state should be filed under
+# an owner rather than under nothing at all.
+#
+# It is deliberately a FIXED id. When Supabase Auth lands, existing rows already
+# carry an owner, so the migration is "map this id to the first real account"
+# rather than "invent ownership for a pile of unowned data".
+SINGLE_TENANT = Account(
+    id="00000000-0000-0000-0000-00000000000f",
+    org_id="00000000-0000-0000-0000-0000000000af",
+    email=None,
+)
+
+
 async def resolve_account(request: Any = None) -> Account:
     """Resolve the caller to exactly one account, or raise.
 
-    THIS IS THE SWAP POINT. When Supabase Auth lands (M1) this verifies the
+    THIS IS THE SWAP POINT. When Supabase Auth lands (M3) this verifies the
     session JWT, looks the row up in OUR `accounts` table by `external_auth_id`
     (the provider's id lives in that column and nowhere else, so the provider
     stays swappable — Supabase now, WorkOS when SSO/SCIM is needed), and returns
@@ -91,15 +106,40 @@ async def resolve_account(request: Any = None) -> Account:
 
     Order per DIRECTION: authenticate -> resolve account -> check entitlement ->
     run.
+
+    UNTIL THEN, a request with a VERIFIED master-password session resolves to
+    SINGLE_TENANT. That is not the same as guessing: the session was checked, and
+    this deployment has exactly one tenant, so naming it is more honest than
+    pretending there is no owner. A request with NO verified session still
+    raises — a missing session must never resolve to somebody.
     """
-    # --- M1 replaces this block -------------------------------------------
+    # --- M3 replaces this block -------------------------------------------
     if _DEV_ENABLED:
         return DEV_ACCOUNT
+
+    if request is not None:
+        from . import auth as auth_layer
+        token = ""
+        try:
+            raw = request.headers.get("authorization") or ""
+            if raw.lower().startswith("bearer "):
+                token = raw[7:].strip()
+        except Exception:
+            token = ""
+        if token and auth_layer.verify_token(token) is not None:
+            return SINGLE_TENANT
+
     raise NotAuthenticated("No verified session on this request.")
 
 
 async def require_account(request: Any = None) -> Account:
-    """FastAPI-dependency form. Add the entitlement gate here in M6 so that a
-    single dependency covers authenticate + resolve + entitle for every route
-    that costs money."""
-    return await resolve_account(request)
+    """authenticate -> resolve -> ENTITLE, in one dependency.
+
+    The entitlement check lives here rather than in each route because a gate
+    that has to be remembered at every callsite is a gate that will be forgotten
+    at one of them, and the one that is forgotten is the expensive one.
+    """
+    account = await resolve_account(request)
+    from .entitlements import check
+    check(account.id)
+    return account
