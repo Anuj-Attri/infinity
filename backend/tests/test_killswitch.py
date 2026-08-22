@@ -276,3 +276,144 @@ def test_require_account_applies_the_entitlement_check(app_mod, monkeypatch):
     e.set_killswitch(A.DEV_ACCOUNT.id, True, "nope")
     with pytest.raises(e.Killswitched):
         asyncio.run(A.require_account(None))
+
+
+# ── the gaps a provider-layer gate can still miss ────────────────────────────
+
+def test_the_chat_lane_is_gated(app_mod):
+    """The one I missed first time round.
+
+    /chat and /chat/stream go through providers/chat.py, NOT providers/
+    dispatch.py — so gating only dispatch left the primary chat path spending
+    while the switch was on. Every billing method here, across all four
+    providers.
+    """
+    _, e = app_mod
+    from app.accounts import SINGLE_TENANT
+    from app.providers.chat import (AnthropicProvider, GeminiProvider,
+                                    OpenAIProvider, OpenRouterChatProvider)
+    e.set_killswitch(SINGLE_TENANT.id, True, "stop")
+
+    async def drain(p):
+        async for _ in p.stream(model="m", messages=[{"role": "user", "content": "hi"}],
+                                no_think=False, temperature=0.5):
+            pass
+
+    for cls in (AnthropicProvider, OpenAIProvider, GeminiProvider, OpenRouterChatProvider):
+        with pytest.raises(e.Killswitched):
+            asyncio.run(drain(cls("k")))
+
+    with pytest.raises(e.Killswitched):
+        asyncio.run(OpenRouterChatProvider("k").complete_text(
+            model="m", messages=[{"role": "user", "content": "hi"}]))
+
+
+def test_every_billing_method_in_the_provider_modules_is_gated():
+    """A ratchet, because the gap above is easy to reintroduce.
+
+    A new provider, or a new method on an existing one, is a new way to spend.
+    Nothing about forgetting the gate looks wrong — the code works, it just
+    bills through a switch that is supposed to be off.
+    """
+    import ast
+    from pathlib import Path
+
+    PROVIDERS = Path(__file__).resolve().parents[1] / "app" / "providers"
+    BILLING = {"stream", "complete", "complete_text", "generate_media", "embed_texts"}
+    ungated: list[str] = []
+
+    for f in sorted(PROVIDERS.glob("*.py")):
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+                continue
+            if node.name not in BILLING:
+                continue
+            # A Protocol/ABC stub has no body to gate.
+            body = [n for n in node.body if not isinstance(n, ast.Expr)
+                    or not isinstance(getattr(n, "value", None), ast.Constant)]
+            if not body or (len(body) == 1 and isinstance(body[0], (ast.Pass, ast.Ellipsis))):
+                continue
+            calls = {n.func.id for n in ast.walk(node)
+                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+            if "assert_may_spend" not in calls:
+                ungated.append(f"{f.name}:{node.name} (line {node.lineno})")
+
+    assert not ungated, (
+        "billing method(s) with no killswitch check: " + ", ".join(ungated) +
+        "\nEvery method that bills an upstream must call assert_may_spend() "
+        "first. The gate lives at the provider layer, not on the route, because "
+        "background missions are on no request path."
+    )
+
+
+def test_no_route_bills_openrouter_without_going_through_the_gate():
+    """/stocks/summary built its own OpenRouter request inline, so it was
+    invisible to the provider gate AND to spend.record."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+    if "openrouter.ai/api/v1/chat/completions" in src:
+        assert "assert_may_spend()" in src, (
+            "main.py calls OpenRouter directly but never checks the killswitch"
+        )
+
+
+def test_a_paused_read_does_not_destroy_working_vectors(app_mod, monkeypatch, tmp_path):
+    """The nastiest one: a killswitched GET corrupting the index.
+
+    _index_file DELETEs a note's chunks and re-inserts them. /vault/tree,
+    /vault/graph and /vault/stats all call scan() first — so merely READING the
+    vault while paused would replace every edited note's vectors with nulls.
+    """
+    _, e = app_mod
+    import app.vault as V
+    from app.accounts import SINGLE_TENANT
+    from app.providers import embeddings as E
+
+    V = importlib.reload(V)
+    monkeypatch.setenv("VOYAGE_API_KEY", "k")
+    E2 = importlib.reload(E)
+
+    import numpy as np
+
+    async def _fake(texts, *, input_type="document"):
+        return [np.eye(1024, dtype=np.float32)[i % 1024] for i in range(len(texts))]
+    monkeypatch.setattr(E2, "embed_texts", _fake)
+
+    V.VAULT_DIR.mkdir(parents=True, exist_ok=True)
+    note = V.VAULT_DIR / "keep.md"
+    note.write_text("# Keep\n\nirreplaceable content\n", encoding="utf-8")
+    asyncio.run(V.scan(force=True))
+    before = V._db().execute(
+        "SELECT COUNT(*) FROM chunks WHERE vec IS NOT NULL").fetchone()[0]
+    assert before >= 1
+
+    # Pause spending, edit the file, and read the vault.
+    e.set_killswitch(SINGLE_TENANT.id, True, "paused")
+    note.write_text("# Keep\n\nirreplaceable content, edited\n", encoding="utf-8")
+    asyncio.run(V.scan(force=True))
+
+    after = V._db().execute(
+        "SELECT COUNT(*) FROM chunks WHERE vec IS NOT NULL").fetchone()[0]
+    assert after == before, (
+        "a read during a pause destroyed working vectors — the index was "
+        "rebuilt with nulls because the re-embed was refused"
+    )
+
+
+def test_a_refusal_is_distinguishable_from_being_unable(app_mod, monkeypatch):
+    """EmbedRefused subclasses EmbedError so existing handlers keep degrading,
+    while callers that would DESTROY something can tell the difference."""
+    _, e = app_mod
+    from app.accounts import SINGLE_TENANT
+    from app.providers import embeddings as E
+
+    monkeypatch.setenv("VOYAGE_API_KEY", "k")
+    E2 = importlib.reload(E)
+    e.set_killswitch(SINGLE_TENANT.id, True, "paused")
+
+    with pytest.raises(E2.EmbedRefused) as ei:
+        asyncio.run(E2.embed_texts(["x"]))
+    assert isinstance(ei.value, E2.EmbedError), (
+        "EmbedRefused must stay an EmbedError or every existing handler breaks"
+    )

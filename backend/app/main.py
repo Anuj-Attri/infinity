@@ -103,7 +103,7 @@ from pydantic import BaseModel  # noqa: E402
 
 from . import auth as auth_layer  # noqa: E402
 from .accounts import NotAuthenticated
-from .entitlements import Killswitched  # noqa: E402
+from .entitlements import Killswitched, assert_may_spend  # noqa: E402
 
 # NOT IMPORTED IN MARK 4 (and the reason the local lane below is gone):
 #   reactor.providers.ollama_local  — deleted; Ollama is out of scope (AGENTS.md)
@@ -3192,6 +3192,13 @@ async def stocks_summary(body: SummaryIn) -> SummaryOut:
         "X-Title": "Infinity (Reactor Mk3)",
         "content-type": "application/json",
     }
+
+    # KILLSWITCH. This handler builds its own OpenRouter request instead of
+    # going through the dispatch registry, so it is invisible to the provider
+    # gate that covers everything else — and to spend.record, which is a second
+    # reason to route it properly one day. Until then it needs its own check, or
+    # a paused deployment keeps paying for this one endpoint.
+    assert_may_spend()
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:

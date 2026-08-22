@@ -65,6 +65,17 @@ class EmbedError(RuntimeError):
     """Raised for every failure. There is no degraded success path."""
 
 
+class EmbedRefused(EmbedError):
+    """Refused ON PURPOSE by the killswitch, not unable.
+
+    A subclass so every `except EmbedError` keeps degrading exactly as it did,
+    while callers that would DESTROY something to rebuild it can tell the
+    difference. vault._index_file deletes a note's chunks before re-embedding;
+    if the re-embed is refused it would replace working vectors with nulls — a
+    read during a deliberate pause would quietly corrupt the index.
+    """
+
+
 def _key() -> str:
     return (os.environ.get("VOYAGE_API_KEY") or "").strip()
 
@@ -163,7 +174,7 @@ async def embed_texts(texts: list[str], *, input_type: InputType = "document") -
     try:
         assert_may_spend()
     except Killswitched as e:
-        raise EmbedError(f"embedding refused: {e.reason}") from e
+        raise EmbedRefused(f"embedding refused: {e.reason}") from e
 
     # Voyage rejects empty strings. Keep positions stable so callers can zip
     # results back onto their inputs.

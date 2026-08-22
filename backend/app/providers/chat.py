@@ -239,6 +239,12 @@ class AnthropicProvider:
         self, *, model: str, messages: list[dict[str, Any]],
         no_think: bool, temperature: float | None,
     ) -> AsyncIterator[str]:
+        # KILLSWITCH. This is the lane /chat and /chat/stream actually use,
+        # so without it the main chat path kept spending while the switch
+        # was on. At the provider layer, not a route dependency, because a
+        # mission running in a background task is on no request path.
+        from ..entitlements import assert_may_spend
+        assert_may_spend()
         system, rest = _split_system(messages)
         # Anthropic only allows alternating user/assistant turns. The
         # backend's _build_chat_messages already produces that pattern.
@@ -343,6 +349,12 @@ class OpenAIProvider:
         self, *, model: str, messages: list[dict[str, Any]],
         no_think: bool, temperature: float | None,
     ) -> AsyncIterator[str]:
+        # KILLSWITCH. This is the lane /chat and /chat/stream actually use,
+        # so without it the main chat path kept spending while the switch
+        # was on. At the provider layer, not a route dependency, because a
+        # mission running in a background task is on no request path.
+        from ..entitlements import assert_may_spend
+        assert_may_spend()
         payload: dict[str, Any] = {
             "model":    model,
             "messages": _strip_cache_boundary(messages),
@@ -440,6 +452,12 @@ class GeminiProvider:
         self, *, model: str, messages: list[dict[str, Any]],
         no_think: bool, temperature: float | None,
     ) -> AsyncIterator[str]:
+        # KILLSWITCH. This is the lane /chat and /chat/stream actually use,
+        # so without it the main chat path kept spending while the switch
+        # was on. At the provider layer, not a route dependency, because a
+        # mission running in a background task is on no request path.
+        from ..entitlements import assert_may_spend
+        assert_may_spend()
         system, contents = _to_gemini_messages(messages)
         payload: dict[str, Any] = {"contents": contents}
         if system:
@@ -599,6 +617,12 @@ class OpenRouterChatProvider:
         self, *, model: str, messages: list[dict[str, Any]],
         no_think: bool, temperature: float | None,
     ) -> AsyncIterator[str]:
+        # KILLSWITCH. This is the lane /chat and /chat/stream actually use,
+        # so without it the main chat path kept spending while the switch
+        # was on. At the provider layer, not a route dependency, because a
+        # mission running in a background task is on no request path.
+        from ..entitlements import assert_may_spend
+        assert_may_spend()
         payload: dict[str, Any] = {
             "model":    model,
             "messages": self._cacheable_messages(model, messages),
@@ -663,6 +687,12 @@ class OpenRouterChatProvider:
     ) -> str:
         """Non-streaming single-shot — used by the utility lane (relevance gate
         / auto-memory extraction). Carries the same zero-retention policy."""
+        # KILLSWITCH. This is the lane /chat and /chat/stream actually use,
+        # so without it the main chat path kept spending while the switch
+        # was on. At the provider layer, not a route dependency, because a
+        # mission running in a background task is on no request path.
+        from ..entitlements import assert_may_spend
+        assert_may_spend()
         payload: dict[str, Any] = {
             "model":      model,
             "messages":   messages,

@@ -368,9 +368,14 @@ async def _embed_many(texts: list[str]) -> list[bytes | None]:
     if not idx:
         return [None] * len(texts)
 
-    from .providers.embeddings import EmbedError, embed_texts
+    from .providers.embeddings import EmbedRefused, embed_texts
     try:
         vecs = await embed_texts([texts[i].strip() for i in idx], input_type="document")
+    except EmbedRefused:
+        # Deliberate, not broken. Propagate so the caller can decline to destroy
+        # anything — see _index_file. Swallowing it here is what turned a read
+        # during a pause into index corruption.
+        raise
     except Exception as e:
         _note_embed_failure(e)
         return [None] * len(texts)
@@ -418,7 +423,28 @@ async def _index_file(abs_path: Path) -> str | None:
         pass
 
     chunks = _chunk_text(body)
-    vecs = await _embed_many(chunks)
+    from .providers.embeddings import EmbedRefused
+    try:
+        vecs = await _embed_many(chunks)
+    except EmbedRefused:
+        # DO NOT DESTROY A WORKING INDEX TO REBUILD IT WITH NOTHING.
+        #
+        # Below, this note's chunks are deleted and re-inserted. Fine when the
+        # embed merely failed — the rows return without vectors and a backfill
+        # fixes them. NOT fine when embedding was refused on purpose: /vault/tree,
+        # /vault/graph and /vault/stats all call scan() first, so simply READING
+        # the vault while spending is paused would replace every edited note's
+        # working vectors with nulls.
+        with _LOCK:
+            already = _db().execute(
+                "SELECT COUNT(*) FROM chunks WHERE node_id=?", (node_id,)).fetchone()[0]
+        if already:
+            print(f"[vault] not re-indexing {rel} while embedding is paused — "
+                  f"its existing vectors are left intact", flush=True)
+            return node_id
+        # A note with nothing to protect is still worth indexing; it just gets
+        # no vectors, and /vault/reindex fills them in when spending resumes.
+        vecs = [None] * len(chunks)
 
     links = {_slugify(m) for m in _WIKILINK_RE.findall(body)}
 
