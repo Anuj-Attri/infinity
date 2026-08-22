@@ -33,6 +33,7 @@ the same behaviour as before, which is the correct behaviour when unconfigured.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Literal
 
@@ -120,6 +121,27 @@ def _to_unit(vec: list[float], where: str) -> np.ndarray:
 # that in one call, and the failure would be a 400 at an unpredictable size.
 _MAX_BATCH = 1000
 
+# Enough attempts to ride out a per-minute cap without making a user wait
+# forever for an answer that is not coming. ~1s, 2s, 4s, 8s, 16s.
+_MAX_RETRIES = 5
+
+
+def _backoff(attempt: int) -> float:
+    return min(2.0 ** attempt, 16.0)
+
+
+def _retry_after(resp) -> float | None:
+    """Seconds the server asked us to wait, if it said. Ignores nonsense."""
+    raw = (resp.headers.get("retry-after") or "").strip()
+    if not raw:
+        return None
+    try:
+        wait = float(raw)
+    except ValueError:
+        return None          # HTTP-date form; the backoff curve is fine
+    # A server asking for minutes is not something to sit and block on.
+    return wait if 0 < wait <= 30 else None
+
 
 async def embed_texts(texts: list[str], *, input_type: InputType = "document") -> list[np.ndarray]:
     """Embed a batch. Raises EmbedError unless every input embedded cleanly.
@@ -154,25 +176,55 @@ async def embed_texts(texts: list[str], *, input_type: InputType = "document") -
         # not turn a whole re-index into a 400.
         "truncation": True,
     }
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            r = await client.post(
-                VOYAGE_URL,
-                json=payload,
-                headers={"Authorization": f"Bearer {key}",
-                         "Content-Type": "application/json"},
-            )
-    except httpx.HTTPError as e:
-        raise EmbedError(f"embedding request failed (transport: {e})") from e
 
-    if r.status_code == 401:
-        raise EmbedError("VOYAGE_API_KEY was rejected (HTTP 401)")
-    if r.status_code == 429:
-        raise EmbedError("Voyage rate limit (HTTP 429)")
-    if r.status_code != 200:
-        # The body carries Voyage's own reason (bad model id, bad dimension).
-        # Include it: "HTTP 400" alone sends the reader looking in the wrong place.
-        raise EmbedError(f"embedding request failed (HTTP {r.status_code}: {r.text[:200]})")
+    # RETRY THE TRANSIENT FAILURES. A rate limit is not a "no", it is a "not
+    # yet", and treating it as a hard error is how three notes ingested in a row
+    # ended up with one vector between them — Voyage's per-minute cap is low on
+    # a new account, and every embed after the first few simply gave up. The
+    # caller then stores the chunk with no vector, so the note is quietly
+    # unsearchable by meaning until someone runs a backfill.
+    #
+    # 401 is NOT retried: a rejected key will still be rejected in four seconds,
+    # and retrying it just multiplies the delay before a clear error.
+    last_err: str | None = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(
+                    VOYAGE_URL,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {key}",
+                             "Content-Type": "application/json"},
+                )
+        except httpx.HTTPError as e:
+            last_err = f"transport: {e}"
+            if attempt + 1 >= _MAX_RETRIES:
+                raise EmbedError(f"embedding request failed ({last_err})") from e
+            await asyncio.sleep(_backoff(attempt))
+            continue
+
+        if r.status_code == 401:
+            raise EmbedError("VOYAGE_API_KEY was rejected (HTTP 401)")
+
+        if r.status_code == 429 or r.status_code >= 500:
+            last_err = f"HTTP {r.status_code}"
+            if attempt + 1 >= _MAX_RETRIES:
+                raise EmbedError(
+                    f"Voyage still {last_err} after {_MAX_RETRIES} attempts. "
+                    f"A new Voyage account has a low per-minute limit; this "
+                    f"resolves on its own, and /vault/reindex + /memory/reindex "
+                    f"will fill in anything that was skipped."
+                )
+            # Honour Retry-After when the server sends one; it knows better
+            # than any backoff curve we invent.
+            await asyncio.sleep(_retry_after(r) or _backoff(attempt))
+            continue
+
+        if r.status_code != 200:
+            # The body carries Voyage's own reason (bad model id, bad dimension).
+            # Include it: "HTTP 400" alone sends the reader looking in the wrong place.
+            raise EmbedError(f"embedding request failed (HTTP {r.status_code}: {r.text[:200]})")
+        break
 
     try:
         data = r.json()["data"]

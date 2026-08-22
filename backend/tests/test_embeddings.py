@@ -38,15 +38,22 @@ def emb(monkeypatch):
 
 
 class _Resp:
-    def __init__(self, status, payload=None, text=""):
+    def __init__(self, status, payload=None, text="", headers=None):
         self.status_code = status
         self._payload = payload
         self.text = text
+        self.headers = headers or {}
 
     def json(self):
         if self._payload is None:
             raise ValueError("no json")
         return self._payload
+
+
+async def _no_sleep(*_a, **_k):
+    """Skip backoff waits. Must NOT call asyncio.sleep — the tests patch that
+    same attribute, so referring to it here recurses forever."""
+    return None
 
 
 def _stub(monkeypatch, mod, resp):
@@ -176,18 +183,122 @@ def test_results_are_ordered_by_the_index_the_provider_returns(emb, monkeypatch)
     assert b[1] == pytest.approx(1.0)
 
 
-@pytest.mark.parametrize("code,needle", [
-    (401, "rejected"),
-    (429, "rate limit"),
-    (500, "HTTP 500"),
-])
-def test_http_failures_raise_with_a_usable_reason(emb, monkeypatch, code, needle):
+def test_a_rejected_key_fails_immediately_without_retrying(emb, monkeypatch):
+    """401 will still be 401 in four seconds; retrying only delays the answer."""
     monkeypatch.setenv("VOYAGE_API_KEY", "k")
     e = importlib.reload(emb)
-    _stub(monkeypatch, e, _Resp(code, None, text="upstream said no"))
+    tries = {"n": 0}
+
+    class _C:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kw):
+            tries["n"] += 1
+            return _Resp(401)
+    monkeypatch.setattr(e.httpx, "AsyncClient", _C)
+
     with pytest.raises(e.EmbedError) as ei:
         asyncio.run(e.embed_text("hello"))
-    assert needle in str(ei.value)
+    assert "rejected" in str(ei.value)
+    assert tries["n"] == 1, "a bad key was retried"
+
+
+def test_a_rate_limit_is_retried_and_then_succeeds(emb, monkeypatch):
+    """THE BUG THIS FIXES. A new Voyage account has a low per-minute cap, so
+    ingesting three notes in a row left one vector between them — every embed
+    after the first few gave up on a 429 and the chunk was stored unsearchable."""
+    monkeypatch.setenv("VOYAGE_API_KEY", "k")
+    e = importlib.reload(emb)
+    monkeypatch.setattr(e.asyncio, "sleep", _no_sleep)
+    good = {"data": [{"embedding": [1.0] * e.VOYAGE_DIM, "index": 0}]}
+    seq = [_Resp(429), _Resp(429), _Resp(200, good)]
+    tries = {"n": 0}
+
+    class _C:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kw):
+            r = seq[tries["n"]]
+            tries["n"] += 1
+            return r
+    monkeypatch.setattr(e.httpx, "AsyncClient", _C)
+
+    v = asyncio.run(e.embed_text("hello"))
+    assert v.shape == (e.VOYAGE_DIM,)
+    assert tries["n"] == 3, "did not retry through the rate limit"
+
+
+def test_a_persistent_rate_limit_eventually_raises(emb, monkeypatch):
+    """Retrying forever would hang a request instead of answering."""
+    monkeypatch.setenv("VOYAGE_API_KEY", "k")
+    e = importlib.reload(emb)
+    monkeypatch.setattr(e.asyncio, "sleep", _no_sleep)
+    tries = {"n": 0}
+
+    class _C:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kw):
+            tries["n"] += 1
+            return _Resp(429)
+    monkeypatch.setattr(e.httpx, "AsyncClient", _C)
+
+    with pytest.raises(e.EmbedError) as ei:
+        asyncio.run(e.embed_text("hello"))
+    assert tries["n"] == e._MAX_RETRIES
+    assert "reindex" in str(ei.value), "the error should say how to recover"
+
+
+def test_a_server_error_is_retried_too(emb, monkeypatch):
+    monkeypatch.setenv("VOYAGE_API_KEY", "k")
+    e = importlib.reload(emb)
+    monkeypatch.setattr(e.asyncio, "sleep", _no_sleep)
+    good = {"data": [{"embedding": [1.0] * e.VOYAGE_DIM, "index": 0}]}
+    seq = [_Resp(503), _Resp(200, good)]
+    tries = {"n": 0}
+
+    class _C:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kw):
+            r = seq[tries["n"]]; tries["n"] += 1; return r
+    monkeypatch.setattr(e.httpx, "AsyncClient", _C)
+    asyncio.run(e.embed_text("hello"))
+    assert tries["n"] == 2
+
+
+def test_a_bad_request_is_NOT_retried(emb, monkeypatch):
+    """400 means the payload is wrong; sending it four more times cannot help."""
+    monkeypatch.setenv("VOYAGE_API_KEY", "k")
+    e = importlib.reload(emb)
+    tries = {"n": 0}
+
+    class _C:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, **kw):
+            tries["n"] += 1
+            return _Resp(400, None, text="unknown model")
+    monkeypatch.setattr(e.httpx, "AsyncClient", _C)
+    with pytest.raises(e.EmbedError) as ei:
+        asyncio.run(e.embed_text("hello"))
+    assert tries["n"] == 1
+    assert "unknown model" in str(ei.value), "the provider's own reason was dropped"
+
+
+def test_retry_after_is_honoured_when_the_server_sends_one(emb, monkeypatch):
+    monkeypatch.setenv("VOYAGE_API_KEY", "k")
+    e = importlib.reload(emb)
+    assert e._retry_after(_Resp(429, headers={"retry-after": "5"})) == 5.0
+    assert e._retry_after(_Resp(429, headers={})) is None
+    assert e._retry_after(_Resp(429, headers={"retry-after": "Tue, 1 Jan 2030"})) is None
+    # Refuse to block for minutes on a single embed.
+    assert e._retry_after(_Resp(429, headers={"retry-after": "600"})) is None
 
 
 def test_an_empty_string_is_refused_rather_than_zero_filled(emb, monkeypatch):
