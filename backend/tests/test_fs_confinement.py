@@ -27,6 +27,8 @@ import importlib
 import pytest
 from fastapi.testclient import TestClient
 
+ACCT = "00000000-0000-0000-0000-00000000000f"   # SINGLE_TENANT
+
 
 @pytest.fixture
 def client(monkeypatch, tmp_path):
@@ -44,7 +46,7 @@ def client(monkeypatch, tmp_path):
         "/fs/tree", "/fs/read", "/fs/write",
     })
 
-    ws = fs.workspace_root()
+    ws = fs.workspace_dir(ACCT)
     (ws / "hello.py").write_text("print('hi')\n", encoding="utf-8")
 
     # The things an escape would be after. Deliberately outside the workspace.
@@ -193,3 +195,66 @@ def test_the_workspace_lives_on_the_persistent_volume(client, tmp_path):
     assert str(ws).startswith(str((tmp_path / "data").resolve())), (
         f"workspace {ws} is not under DATA_DIR; it will not survive a redeploy"
     )
+
+
+# ---------------------------------------------------------------- ownership ---
+
+OTHER = "11111111-1111-1111-1111-111111111111"
+
+
+def test_each_account_gets_its_own_workspace(client):
+    """Code files are FILES. A shared workspace means two accounts editing
+    main.py edit the SAME file — every path check here passes and the content is
+    still shared. That is the failure a containment check cannot catch, because
+    nothing about it is out of bounds."""
+    _, fs, ws, _ = client
+    theirs = fs.workspace_dir(OTHER)
+    assert theirs != ws
+    assert theirs.parent == ws.parent
+
+
+def test_the_same_filename_is_two_different_files(client):
+    _, fs, ws, _ = client
+    (ws / "main.py").write_text("mine\n", encoding="utf-8")
+    (fs.workspace_dir(OTHER) / "main.py").write_text("theirs\n", encoding="utf-8")
+    assert (ws / "main.py").read_text(encoding="utf-8") == "mine\n"
+
+
+def test_one_account_cannot_reach_into_another_s_workspace(client):
+    """The containment test does double duty: another account's directory is
+    outside YOUR root, so it is refused by exactly the same line that refuses
+    /etc/passwd."""
+    c, fs, _, _ = client
+    theirs = fs.workspace_dir(OTHER)
+    (theirs / "secret.py").write_text("their private code\n", encoding="utf-8")
+
+    r = c.get("/fs/read", params={"path": str(theirs / "secret.py")})
+    assert r.status_code == 403, "read another account's file"
+    assert "their private code" not in r.text
+
+    before = (theirs / "secret.py").read_text(encoding="utf-8")
+    w = c.post("/fs/write", json={"path": str(theirs / "secret.py"), "content": "tampered"})
+    assert w.status_code == 403, "wrote into another account's workspace"
+    assert (theirs / "secret.py").read_text(encoding="utf-8") == before
+
+    t = c.get("/fs/tree", params={"path": str(theirs)})
+    assert t.status_code == 403, "listed another account's workspace"
+
+
+def test_pre_ownership_files_move_into_the_single_tenant_workspace(monkeypatch, tmp_path):
+    """Flat layout -> per-account, once, on first use. Honest only while there
+    IS one tenant; later it would be a guess about whose files these were."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("WORKSPACE_DIR", raising=False)
+    import app.paths
+    importlib.reload(app.paths)
+
+    flat = app.paths.data_path("workspace")
+    flat.mkdir(parents=True, exist_ok=True)
+    (flat / "legacy.py").write_text("# from before ownership\n", encoding="utf-8")
+
+    import app.fs
+    fs = importlib.reload(app.fs)
+    d = fs.workspace_dir(ACCT)
+    assert (d / "legacy.py").exists(), "a pre-ownership file was left behind"
+    assert not (flat / "legacy.py").exists(), "it was copied rather than moved"

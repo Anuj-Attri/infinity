@@ -300,3 +300,123 @@ def test_the_global_list_does_not_rot_either():
         f"{sorted(stale)} now take an account, so they are no longer global — "
         "remove them from DELIBERATELY_GLOBAL."
     )
+
+
+# ---------------------------------------------------------------------------
+# FILE-BACKED STATE. The SQL checks above cannot see any of this, and for a
+# while that made the backlog look finished when it was not: "one entry left"
+# was true of tables and false of the app. A JSON file on the volume is exactly
+# as shared between accounts as a table with no WHERE clause.
+#
+# Each entry names what a second account would get. Same rules as UNOWNED:
+# shrink it, and delete the line when you do.
+# ---------------------------------------------------------------------------
+FILE_STATE_UNOWNED: dict[str, str] = {
+    "app/main.py:_PERMISSIONS_PATH":
+        "nova_permissions.json — which tools the model has been granted. One "
+        "account's approvals would authorise another's turns, which is the "
+        "consent gate quietly answering for someone who never consented.",
+    "app/notify.py:_DATA":
+        "notify_queue.json / notify_settings.json — one queue for everyone, so "
+        "accounts receive each other's notifications, including job titles and "
+        "failure messages.",
+    "app/spend.py:_SPEND_PATH":
+        "spend.json — one ledger. Another account's usage is attributed to you, "
+        "and their spend silences your daily warning.",
+    "app/mcp_client.py:_STORE_PATH":
+        "mcp_servers.json — connector configuration, including bearer tokens "
+        "for remote servers. Shared config means shared credentials.",
+    "app/mcp_client.py:_AUDIT_PATH":
+        "mcp_audit.jsonl — one audit log. An audit trail that mixes tenants "
+        "cannot answer 'what did THIS account's model do', which is the only "
+        "question an audit log exists for.",
+    "app/skills_engine.py:_STATE_PATH":
+        "skills.json — which skills are enabled. Lowest value here: the skill "
+        "CONTENT is identical read-only built-in material, so only the on/off "
+        "preference leaks.",
+}
+
+# File-backed state that is correctly shared.
+FILE_STATE_GLOBAL: dict[str, str] = {
+    "app/paths.py:DATA_DIR":
+        "The root every other path is derived from. Per-account by definition "
+        "would be circular — it is the thing accounts are stored inside.",
+    "app/auth.py:_DATA_DIR":
+        "tokens.json is the single master password and its device tokens. It IS "
+        "the pre-account authentication scheme; Supabase Auth retires it at M3.",
+    "app/mcp_client.py:_STATE_PATH":
+        "mcp_state.json holds one boolean: the operator's global MCP kill "
+        "switch. Deliberately service-wide, like the spend killswitch.",
+    "app/agent/store.py:_DB_PATH": "A database file; its ROWS carry the owner.",
+    "app/vault.py:_DB_PATH": "A database file; its ROWS carry the owner.",
+    "app/entitlements.py:_DB_PATH": "A database file; its ROWS carry the owner.",
+    "app/main.py:_DB_PATH": "A database file; its ROWS carry the owner.",
+    "app/vault.py:_VAULT_ROOT":
+        "The ROOT of the per-account note directories. vault_dir(account_id) "
+        "returns the per-account path underneath it.",
+    "app/fs.py:WORKSPACE_ROOT":
+        "The ROOT of the per-account code workspaces. workspace_dir(account_id) "
+        "returns the per-account path underneath it.",
+}
+
+
+def _file_state_locations() -> set[str]:
+    """Module-level names bound to a path under DATA_DIR."""
+    found: set[str] = set()
+    for root in ROOTS:
+        for f in sorted(root.rglob("*.py")):
+            if "__pycache__" in f.parts:
+                continue
+            try:
+                tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"))
+            except SyntaxError:
+                continue
+            rel = f.relative_to(BACKEND).as_posix()
+            for node in tree.body:
+                if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    continue
+                val = getattr(node, "value", None)
+                if val is None:
+                    continue
+                calls = {n.func.id for n in ast.walk(val)
+                         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+                if not ({"data_path", "data_dir"} & calls):
+                    continue
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for t in targets:
+                    name = getattr(t, "id", "")
+                    if name:
+                        found.add(f"{rel}:{name}")
+    return found
+
+
+def test_no_new_file_backed_state_appears_unrecorded():
+    """A JSON file on the volume is as shared as a table with no WHERE clause.
+
+    The SQL ratchet is blind to all of this, which is how "backlog: one entry"
+    came to be said out loud while six unowned files sat on the disk.
+    """
+    found = _file_state_locations()
+    recorded = set(FILE_STATE_UNOWNED) | set(FILE_STATE_GLOBAL)
+    new = found - recorded
+    assert not new, (
+        "file-backed state with no recorded owner:\n  " + "\n  ".join(sorted(new))
+        + "\n\nEither make it per-account, or record it with what a second "
+          "account would get."
+    )
+
+
+def test_the_file_state_ledger_does_not_rot():
+    found = _file_state_locations()
+    stale = (set(FILE_STATE_UNOWNED) | set(FILE_STATE_GLOBAL)) - found
+    assert not stale, (
+        f"recorded but no longer present: {sorted(stale)} — delete them, or the "
+        f"ledger becomes fiction."
+    )
+
+
+def test_every_file_state_entry_says_what_leaks():
+    for name, why in FILE_STATE_UNOWNED.items():
+        assert len(why) > 60, f"{name}: say what a second account would actually get"
+    for name, why in FILE_STATE_GLOBAL.items():
+        assert len(why) > 40, f"{name}: say why sharing it is correct"
