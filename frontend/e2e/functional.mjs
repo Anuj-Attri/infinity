@@ -261,6 +261,76 @@ await check("your name saves and survives a reload", async () => {
   return `saved "${NAME}", survived a reload, then cleared`;
 });
 
+// What Nova remembers about you — add, see it listed, delete it. A core flow
+// with no coverage at all until now, which is why restructuring the list from
+// type-grouped sections to one flat list could have broken it silently.
+await check("a memory can be added and deleted", async () => {
+  await page.keyboard.press("Escape").catch(() => {});
+  const btn = await page.$(".settings-btn, [aria-label='Settings']");
+  await btn.click();
+  await page.waitForSelector(".settings-tab", { timeout: 8000 });
+  await page.click('.settings-tab:text-is("Nova")');
+  await page.waitForSelector(".mem-add-input", { timeout: 8000 });
+
+  const MARK = `e2e-memory-${Date.now().toString().slice(-6)}`;
+  await page.waitForTimeout(600);            // let the panel's initial load settle
+  await page.fill(".mem-add-input", MARK);
+  // Add is disabled until the field has text, so an enabled button is proof
+  // React actually saw the input. Without this, a fill that did not register
+  // makes the click a silent no-op, and the check fails later with "added but
+  // not listed" — which points at the list instead of at the typing.
+  await page.waitForFunction(
+    () => { const b = document.querySelector(".mem-add-btn"); return b && !b.disabled; },
+    { timeout: 5000 },
+  ).catch(() => { throw new Error("the Add button never enabled — the field did not register the text"); });
+  await page.click(".mem-add-btn");
+
+  // POLL, do not sleep a fixed amount. Saving embeds the text, and the FIRST
+  // embed in a fresh process pays for the TLS handshake to the embedding API on
+  // top of the call itself — comfortably more than the 1.5s this check
+  // originally waited. That made it fail against a perfectly working build, and
+  // the failure looked exactly like the rendering bug it was meant to catch.
+  let listed = [];
+  let errText = "";
+  for (let i = 0; i < 30; i++) {
+    listed = await page.$$eval(".mem-card-text", (els) => els.map((e) => e.textContent));
+    errText = await page.$$eval(".mem-error", (els) => els.map((e) => e.textContent).join(" "));
+    if (listed.some((t) => t.includes(MARK)) || errText.trim()) break;
+    await page.waitForTimeout(500);
+  }
+
+  // With no embedding provider configured the backend correctly refuses with a
+  // 503. That is the environment, not a bug — but this check must not go
+  // quietly green because of it, or it would report success on a build where
+  // memory is entirely broken. So when the happy path is unavailable, assert
+  // the other property that matters: the refusal is visible to the user rather
+  // than the click appearing to do nothing.
+  if (!listed.some((t) => t.includes(MARK))) {
+    // A successful add clears the field, so its contents say WHERE this broke:
+    // still holding the text means the request never completed or threw;
+    // empty means it was accepted and the list is what is wrong.
+    const stillTyped = await page.$eval(".mem-add-input", (el) => el.value).catch(() => "?");
+    await page.keyboard.press("Escape").catch(() => {});
+    if (errText.trim()) {
+      return `NOT FULLY TESTED — save refused, but visibly: "${errText.trim().slice(0, 70)}"`;
+    }
+    throw new Error(
+      `added but not listed and nothing was said — ${listed.length} card(s), ` +
+      `input still holds ${JSON.stringify(stillTyped)}`);
+  }
+
+  // Delete it again so repeat runs do not accumulate junk in the account.
+  const idx = listed.findIndex((t) => t.includes(MARK));
+  const delBtns = await page.$$(".mem-card .mem-btn-danger");
+  if (!delBtns[idx]) throw new Error("no delete button on the new memory");
+  await delBtns[idx].click();
+  await page.waitForTimeout(1500);
+  const after = await page.$$eval(".mem-card-text", (els) => els.map((e) => e.textContent));
+  await page.keyboard.press("Escape").catch(() => {});
+  if (after.some((t) => t.includes(MARK))) throw new Error("delete did not remove it");
+  return `added, listed among ${listed.length}, deleted`;
+});
+
 // Nova's built-in hands (model switching, panels, /image, /audio, /research,
 // /summarize) were rendered in the same list as a user's servers, with the same
 // Remove button — and removing one only breaks the app until the next restart

@@ -58,24 +58,25 @@ export default function SettingsPanel({ open, onClose }: Props) {
   const [memError, setMemError] = useState<string | null>(null);
   const [memLoading, setMemLoading] = useState(false);
   const [draftText, setDraftText] = useState("");
-  const [draftType, setDraftType] = useState<"profile" | "episodic">("profile");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [memSearch, setMemSearch] = useState("");
 
-  // Filter by search (name/content) then group by type for a clean, organized
-  // list. Pure derivation over the existing memory data — no schema change.
-  const memGroups = (() => {
+  // One list, newest first.
+  //
+  // It used to be grouped under headings reading "profile" and "episodic" —
+  // our storage vocabulary, printed at the user. The distinction is real
+  // (profile is always-on baseline, episodic is recalled when it matches the
+  // turn) but it is ours to manage, not theirs to sort by, and it told a reader
+  // nothing they could act on.
+  const memShownList = (() => {
     const q = memSearch.trim().toLowerCase();
     const filtered = q
-      ? memories.filter((m) => m.text.toLowerCase().includes(q) || m.type.toLowerCase().includes(q))
+      ? memories.filter((m) => m.text.toLowerCase().includes(q))
       : memories;
-    const order: Array<MemoryItem["type"]> = ["profile", "episodic"];
-    return order
-      .map((type) => ({ type, items: filtered.filter((m) => m.type === type) }))
-      .filter((g) => g.items.length > 0);
+    return [...filtered].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
   })();
-  const memShown = memGroups.reduce((n, g) => n + g.items.length, 0);
+  const memShown = memShownList.length;
 
   const refreshMemories = async () => {
     setMemLoading(true);
@@ -94,7 +95,9 @@ export default function SettingsPanel({ open, onClose }: Props) {
     const t = draftText.trim();
     if (!t) return;
     try {
-      await createMemory({ type: draftType, text: t });
+      // Always `profile`: a note someone types by hand is a standing fact
+      // about themselves. `episodic` is Nova's own capture from a turn.
+      await createMemory({ type: "profile", text: t });
       setDraftText("");
       refreshMemories();
     } catch (e) {
@@ -302,15 +305,13 @@ export default function SettingsPanel({ open, onClose }: Props) {
                 : "Memory retrieval paused. Stored memories are kept but not consulted."}
             </div>
 
+            {/* No type picker. Something a person types here by hand is a
+                standing fact about themselves — "I prefer concise replies" —
+                which is what `profile` means. `episodic` is what Nova captures
+                from a conversation on her own; asking the user to classify
+                their own note into our two storage buckets was a question only
+                someone who had read the schema could answer. */}
             <div className="mem-add">
-              <select
-                className="mem-add-type"
-                value={draftType}
-                onChange={(e) => setDraftType(e.target.value as "profile" | "episodic")}
-              >
-                <option value="profile">profile</option>
-                <option value="episodic">episodic</option>
-              </select>
               <input
                 className="mem-add-input"
                 type="text"
@@ -355,61 +356,52 @@ export default function SettingsPanel({ open, onClose }: Props) {
               <div className="settings-stub">No memories match “{memSearch}”.</div>
             )}
 
-            {/* Grouped, card-styled list — clean hierarchy by type. */}
-            <div className="mem-groups">
-              {memGroups.map((g) => (
-                <div className="mem-group" key={g.type}>
-                  <div className="mem-group-h">
-                    <span className={`mem-dot mem-dot-${g.type}`} />
-                    {g.type}
-                    <span className="mem-group-count">{g.items.length}</span>
-                  </div>
-                  <div className="mem-cards">
-                    {g.items.map((m) => (
-                      <div className={`mem-card ${editingId === m.id ? "editing" : ""}`} key={m.id}>
-                        {editingId === m.id ? (
-                          <div className="mem-card-edit">
-                            <input
-                              className="mem-edit-input"
-                              type="text"
-                              value={editText}
-                              onChange={(e) => setEditText(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") { e.preventDefault(); saveEdit(); }
-                                if (e.key === "Escape") { setEditingId(null); }
-                              }}
-                              autoFocus
-                            />
-                            <div className="mem-card-actions">
-                              <button type="button" className="mem-btn" onClick={saveEdit}>save</button>
-                              <button type="button" className="mem-btn mem-btn-ghost" onClick={() => setEditingId(null)}>cancel</button>
-                            </div>
-                          </div>
-                        ) : (
-                          <>
-                            <span className="mem-card-text">{m.text}</span>
-                            <div className="mem-card-foot">
-                              {m.source === "auto" && (
-                                <span className="mem-tag" title="Auto-saved by Nova from your message">auto</span>
-                              )}
-                              <div className="mem-card-actions">
-                                <button
-                                  type="button"
-                                  className="mem-btn mem-btn-ghost"
-                                  onClick={() => { setEditingId(m.id); setEditText(m.text); }}
-                                >edit</button>
-                                <button
-                                  type="button"
-                                  className="mem-btn mem-btn-danger"
-                                  onClick={() => removeMemory(m.id)}
-                                >delete</button>
-                              </div>
-                            </div>
-                          </>
-                        )}
+            {/* One flat list, newest first. The "auto" tag stays — that one IS
+                worth knowing, because it marks something Nova decided to keep
+                about you rather than something you typed. */}
+            <div className="mem-cards">
+              {memShownList.map((m) => (
+                <div className={`mem-card ${editingId === m.id ? "editing" : ""}`} key={m.id}>
+                  {editingId === m.id ? (
+                    <div className="mem-card-edit">
+                      <input
+                        className="mem-edit-input"
+                        type="text"
+                        value={editText}
+                        onChange={(e) => setEditText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { e.preventDefault(); saveEdit(); }
+                          if (e.key === "Escape") { setEditingId(null); }
+                        }}
+                        autoFocus
+                      />
+                      <div className="mem-card-actions">
+                        <button type="button" className="mem-btn" onClick={saveEdit}>save</button>
+                        <button type="button" className="mem-btn mem-btn-ghost" onClick={() => setEditingId(null)}>cancel</button>
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="mem-card-text">{m.text}</span>
+                      <div className="mem-card-foot">
+                        {m.source === "auto" && (
+                          <span className="mem-tag" title="Nova saved this from something you said">auto</span>
+                        )}
+                        <div className="mem-card-actions">
+                          <button
+                            type="button"
+                            className="mem-btn mem-btn-ghost"
+                            onClick={() => { setEditingId(m.id); setEditText(m.text); }}
+                          >edit</button>
+                          <button
+                            type="button"
+                            className="mem-btn mem-btn-danger"
+                            onClick={() => removeMemory(m.id)}
+                          >delete</button>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
