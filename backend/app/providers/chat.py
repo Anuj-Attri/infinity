@@ -891,8 +891,18 @@ def provider_for_model(model_id: str | None) -> tuple[str, ChatProvider | None]:
     primary language path and the catch-all: any namespaced ('vendor/model')
     id, and any unrecognized id, routes there.
 
-    AUTO_MODEL_ID never reaches here: the chat route resolves it first via
-    resolve_auto_model()."""
+    AUTO_MODEL_ID must never reach here — callers resolve it first. That was a
+    comment and nothing more, so /mission/plan violated it and the sentinel went
+    to OpenRouter as though it were a model name. OpenRouter rejected the id and
+    the user was told "planner failed", which points at the planner rather than
+    at the caller that forgot to resolve. It is checked now."""
+    if model_id == AUTO_MODEL_ID:
+        raise ValueError(
+            f"{AUTO_MODEL_ID!r} reached provider_for_model. It is a sentinel, "
+            f"not a model: the calling route must resolve it to a concrete id "
+            f"first. Passing it upstream produces an unknown-model error that "
+            f"blames the provider."
+        )
     openrouter = _PROVIDERS.get("openrouter")
 
     # No selection → default to OpenRouter (the primary path) when available.

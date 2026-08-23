@@ -644,6 +644,17 @@ def _looks_persona_heavy(msg: str) -> bool:
     return any(k in msg for k in _PERSONA_KW)
 
 
+def _resolve_auto_for(text: str) -> str:
+    """Resolve the auto sentinel for a caller that is not a chat turn.
+
+    The mission planner has a goal string, not a ChatIn with history — so it
+    cannot call _route_auto. It does not need the classifier either: there is
+    one lane, and every branch of _route_auto resolves to the same model today.
+    What it needs is to never hand the SENTINEL to a provider.
+    """
+    return _AUTO_API_MODEL
+
+
 async def _route_auto(body: "ChatIn") -> str:
     """Resolve the auto sentinel to a concrete model id for THIS turn.
 
@@ -2053,7 +2064,17 @@ async def mission_plan(body: MissionPlanIn) -> dict:
     if not goal:
         raise HTTPException(status_code=422, detail="empty goal")
 
-    model = body.model or ""
+    # RESOLVE THE SENTINEL FIRST, exactly as /chat and /chat/stream do.
+    #
+    # On a stock install the selected model IS "infinity/auto". It contains a
+    # slash, so provider_for_model happily routes it to OpenRouter — which then
+    # rejects it as an unknown model id, and the caller sees "planner failed"
+    # rather than anything that points at the real cause. Mission Control was
+    # broken out of the box and the error blamed the planner.
+    model = (body.model or "").strip() or chat_provider_registry.AUTO_MODEL_ID
+    if model == chat_provider_registry.AUTO_MODEL_ID:
+        model = _resolve_auto_for(goal)
+
     _, premium = chat_provider_registry.provider_for_model(model)
     if premium is None:
         raise HTTPException(
