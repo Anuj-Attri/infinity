@@ -44,11 +44,12 @@ APP = Path(__file__).resolve().parents[1] / "app"
 #                                   live state, which is where a RUNNING
 #                                   mission always is.
 # See backend/tests/test_mission_ownership.py.
-UNSCOPED_BY_ID: dict[str, str] = {
-    "/vault/node/{node_id}":
-        "A single vault node by id — the knowledge base is the product, and "
-        "this reads from it without asking whose it is.",
-}
+#   /vault/node/{node_id}         — MIGRATED 2026-08-23. Scoped on
+#                                   (owner_account_id, id OR slug), and a note
+#                                   that exists but is not yours 404s exactly
+#                                   like one that does not exist.
+# The list is EMPTY. Every id-addressed route now asks whose it is.
+UNSCOPED_BY_ID: dict[str, str] = {}
 
 
 def _route_paths() -> set[str]:
@@ -115,8 +116,13 @@ SHARED_MUTABLE_STATE: dict[str, str] = {
         "_day_state — the daily spend nudge is process-wide, so one account's "
         "usage silences another's warning.",
     "vault.py":
-        "_vec_cache — a single embedding matrix over the whole corpus. At M5 "
-        "this would mix every tenant's vectors into one index.",
+        "_vec_cache — MIGRATED 2026-08-23: keyed by account, one matrix each. "
+        "It was a single shared matrix, and the leak it caused is the reason to "
+        "keep this entry: the SQL was correctly scoped and results still crossed "
+        "tenants, because a cache hit meant the query never ran. Cached data "
+        "needs the same predicate as the query it stands in for. Still listed "
+        "because it remains module-level state that a second replica would not "
+        "share.",
     "auth.py":
         "_tokens — correct while auth is a single master password. Retired at "
         "M3 by Supabase Auth.",

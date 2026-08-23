@@ -18,6 +18,7 @@ Both are fixed by making a vector self-describing (model + dim) and having
 readers skip what they cannot compare rather than comparing it anyway.
 """
 
+
 from __future__ import annotations
 
 import asyncio
@@ -25,6 +26,8 @@ import importlib
 
 import numpy as np
 import pytest
+
+ACCT = "00000000-0000-0000-0000-00000000000f"   # SINGLE_TENANT
 
 
 @pytest.fixture
@@ -39,7 +42,7 @@ def vault(monkeypatch, tmp_path):
 
 
 def note(v, name: str, body: str) -> None:
-    p = v.VAULT_DIR / name
+    p = v.vault_dir(ACCT) / name
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(f"# {name}\n\n{body}\n", encoding="utf-8")
 
@@ -77,7 +80,7 @@ def chunk_rows(v):
 def test_chunks_are_stored_without_vectors_rather_than_with_fake_ones(vault):
     """Ingestion must keep working; the chunk is still full-text searchable."""
     note(vault, "a.md", "the sky is blue")
-    asyncio.run(vault.scan(force=True))
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
     rows = chunk_rows(vault)
     assert rows, "the note was not indexed at all"
     assert all(r[1] is None for r in rows), "a vector was invented with no provider"
@@ -86,16 +89,16 @@ def test_chunks_are_stored_without_vectors_rather_than_with_fake_ones(vault):
 
 def test_vector_search_returns_nothing_rather_than_guessing(vault):
     note(vault, "a.md", "the sky is blue")
-    asyncio.run(vault.scan(force=True))
-    ids, mat = vault._vec_matrix()
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
+    ids, mat = vault._vec_matrix(account_id=ACCT)
     assert ids == [] and mat is None
 
 
 def test_status_reports_the_gap(vault):
     note(vault, "a.md", "one")
     note(vault, "b.md", "two")
-    asyncio.run(vault.scan(force=True))
-    st = asyncio.run(vault.vault_embeddings_status())
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
+    st = asyncio.run(vault.vault_embeddings_status(account_id=ACCT))
     assert st["chunks_total"] >= 2
     assert st["chunks_with_usable_vector"] == 0
     assert st["chunks_needing_backfill"] == st["chunks_total"]
@@ -105,7 +108,7 @@ def test_status_reports_the_gap(vault):
 def test_backfill_refuses_without_a_provider(vault):
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as ei:
-        asyncio.run(vault.backfill_embeddings())
+        asyncio.run(vault.backfill_embeddings(account_id=ACCT))
     assert ei.value.status_code == 503
 
 
@@ -114,7 +117,7 @@ def test_backfill_refuses_without_a_provider(vault):
 def test_new_chunks_record_which_model_made_them(vault, monkeypatch):
     fake_provider(monkeypatch, vault)
     note(vault, "a.md", "the sky is blue")
-    asyncio.run(vault.scan(force=True))
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
     rows = chunk_rows(vault)
     assert rows and all(r[1] is not None for r in rows)
     assert all(r[2] == "voyage-4" and r[3] == 1024 for r in rows)
@@ -124,30 +127,30 @@ def test_backfill_embeds_the_corpus_that_scan_will_never_revisit(vault, monkeypa
     """The whole point: the files have not changed, so only this can fix them."""
     note(vault, "a.md", "first")
     note(vault, "b.md", "second")
-    asyncio.run(vault.scan(force=True))
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
     assert all(r[1] is None for r in chunk_rows(vault))
 
     # A provider appears. scan() alone must NOT be what fixes this.
     fake_provider(monkeypatch, vault)
-    asyncio.run(vault.scan(force=True))
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
     assert all(r[1] is None for r in chunk_rows(vault)), (
         "scan() re-embedded unchanged files; then this test is not testing backfill"
     )
 
-    out = asyncio.run(vault.backfill_embeddings())
+    out = asyncio.run(vault.backfill_embeddings(account_id=ACCT))
     assert out["embedded"] >= 2
     rows = chunk_rows(vault)
     assert all(r[1] is not None and r[2] == "voyage-4" for r in rows)
 
-    st = asyncio.run(vault.vault_embeddings_status())
+    st = asyncio.run(vault.vault_embeddings_status(account_id=ACCT))
     assert st["chunks_needing_backfill"] == 0
 
 
 def test_backfill_is_idempotent(vault, monkeypatch):
     fake_provider(monkeypatch, vault)
     note(vault, "a.md", "first")
-    asyncio.run(vault.scan(force=True))
-    assert asyncio.run(vault.backfill_embeddings())["embedded"] == 0, (
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
+    assert asyncio.run(vault.backfill_embeddings(account_id=ACCT))["embedded"] == 0, (
         "already-embedded chunks were re-embedded — that is money and rate limit"
     )
 
@@ -158,15 +161,15 @@ def test_vectors_from_another_model_are_skipped_not_compared(vault, monkeypatch)
     """Same dimension, different model: the numbers still multiply."""
     fake_provider(monkeypatch, vault)
     note(vault, "a.md", "first")
-    asyncio.run(vault.scan(force=True))
-    assert len(vault._vec_matrix()[0]) >= 1
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
+    assert len(vault._vec_matrix(account_id=ACCT)[0]) >= 1
 
     with vault._LOCK:
         vault._db().execute("UPDATE chunks SET model='some-other-model'")
         vault._db().commit()
     vault._mark_dirty()
 
-    ids, mat = vault._vec_matrix()
+    ids, mat = vault._vec_matrix(account_id=ACCT)
     assert ids == [] and mat is None, (
         "vectors from a different model were loaded into the search matrix"
     )
@@ -177,8 +180,8 @@ def test_a_stale_wrong_size_vector_cannot_break_the_whole_matrix(vault, monkeypa
     fake_provider(monkeypatch, vault)
     note(vault, "a.md", "first")
     note(vault, "b.md", "second")
-    asyncio.run(vault.scan(force=True))
-    good = len(vault._vec_matrix()[0])
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
+    good = len(vault._vec_matrix(account_id=ACCT)[0])
     assert good >= 2
 
     # A row that claims the right model/dim but holds a short blob.
@@ -190,7 +193,7 @@ def test_a_stale_wrong_size_vector_cannot_break_the_whole_matrix(vault, monkeypa
         vault._db().commit()
     vault._mark_dirty()
 
-    ids, mat = vault._vec_matrix()
+    ids, mat = vault._vec_matrix(account_id=ACCT)
     assert mat is not None, "one corrupt row took out the entire index"
     assert len(ids) == good - 1
     assert mat.shape == (good - 1, 1024)
@@ -200,17 +203,17 @@ def test_backfill_re_embeds_rows_from_a_previous_model(vault, monkeypatch):
     """Changing provider must be a supported operation, not a silent corruption."""
     fake_provider(monkeypatch, vault)
     note(vault, "a.md", "first")
-    asyncio.run(vault.scan(force=True))
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
     with vault._LOCK:
         vault._db().execute("UPDATE chunks SET model='old-model', dim=1024")
         vault._db().commit()
     vault._mark_dirty()
-    assert vault._vec_matrix()[0] == []
+    assert vault._vec_matrix(account_id=ACCT)[0] == []
 
-    out = asyncio.run(vault.backfill_embeddings())
+    out = asyncio.run(vault.backfill_embeddings(account_id=ACCT))
     assert out["embedded"] >= 1
     assert all(r[2] == "voyage-4" for r in chunk_rows(vault))
-    assert len(vault._vec_matrix()[0]) >= 1
+    assert len(vault._vec_matrix(account_id=ACCT)[0]) >= 1
 
 
 # ── batching ─────────────────────────────────────────────────────────────────
@@ -236,7 +239,7 @@ def test_indexing_a_note_makes_ONE_embedding_request(vault, monkeypatch):
 
     # A body long enough to chunk into several pieces.
     note(vault, "long.md", ("paragraph about vectors. " * 120 + "\n\n") * 4)
-    asyncio.run(vault.scan(force=True))
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
 
     assert calls["n"] == 1, f"expected 1 batched request, made {calls['n']}"
     assert calls["sizes"][0] > 1, "the note did not actually chunk; test is vacuous"
@@ -270,7 +273,7 @@ def test_a_rate_limited_search_says_so_instead_of_returning_nothing(vault, monke
     """
     fake_provider(monkeypatch, vault)
     note(vault, "knots.md", "The bowline makes a fixed loop that will not slip.")
-    asyncio.run(vault.scan(force=True))
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
 
     from app.providers import embeddings as E
 
@@ -283,7 +286,7 @@ def test_a_rate_limited_search_says_so_instead_of_returning_nothing(vault, monke
     import reactor.memory.embed as shim
     monkeypatch.setattr(shim, "embed_text", _rate_limited_one)
 
-    out = asyncio.run(vault.vault_search(q="a loop that will not tighten", k=3))
+    out = asyncio.run(vault.vault_search(account_id=ACCT, q="a loop that will not tighten", k=3))
     assert out.get("degraded") is True, "a search that could not run reported success"
     assert "429" in out["degraded_reason"]
 
@@ -292,8 +295,8 @@ def test_a_healthy_search_is_not_marked_degraded(vault, monkeypatch):
     """The flag has to mean something, so it must not be always-on."""
     fake_provider(monkeypatch, vault)
     note(vault, "knots.md", "The bowline makes a fixed loop that will not slip.")
-    asyncio.run(vault.scan(force=True))
-    out = asyncio.run(vault.vault_search(q="bowline", k=3))
+    asyncio.run(vault.scan(force=True, account_id=ACCT))
+    out = asyncio.run(vault.vault_search(account_id=ACCT, q="bowline", k=3))
     assert "degraded" not in out
 
 

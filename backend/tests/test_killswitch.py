@@ -31,6 +31,8 @@ import importlib
 
 import pytest
 
+ACCT = "00000000-0000-0000-0000-00000000000f"   # SINGLE_TENANT
+
 
 @pytest.fixture
 def ent(monkeypatch, tmp_path):
@@ -380,10 +382,10 @@ def test_a_paused_read_does_not_destroy_working_vectors(app_mod, monkeypatch, tm
         return [np.eye(1024, dtype=np.float32)[i % 1024] for i in range(len(texts))]
     monkeypatch.setattr(E2, "embed_texts", _fake)
 
-    V.VAULT_DIR.mkdir(parents=True, exist_ok=True)
-    note = V.VAULT_DIR / "keep.md"
+    V.vault_dir(ACCT).mkdir(parents=True, exist_ok=True)
+    note = V.vault_dir(ACCT) / "keep.md"
     note.write_text("# Keep\n\nirreplaceable content\n", encoding="utf-8")
-    asyncio.run(V.scan(force=True))
+    asyncio.run(V.scan(force=True, account_id=ACCT))
     before = V._db().execute(
         "SELECT COUNT(*) FROM chunks WHERE vec IS NOT NULL").fetchone()[0]
     assert before >= 1
@@ -391,7 +393,7 @@ def test_a_paused_read_does_not_destroy_working_vectors(app_mod, monkeypatch, tm
     # Pause spending, edit the file, and read the vault.
     e.set_killswitch(SINGLE_TENANT.id, True, "paused")
     note.write_text("# Keep\n\nirreplaceable content, edited\n", encoding="utf-8")
-    asyncio.run(V.scan(force=True))
+    asyncio.run(V.scan(force=True, account_id=ACCT))
 
     after = V._db().execute(
         "SELECT COUNT(*) FROM chunks WHERE vec IS NOT NULL").fetchone()[0]

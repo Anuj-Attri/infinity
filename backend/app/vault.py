@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from .paths import data_path
 
@@ -56,7 +56,62 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 #
 # data_path() is the single answer to "where does state go"; nothing may compute
 # its own. docs/PORTING.md names this; skills_engine.py had the same bug once.
-VAULT_DIR = Path(os.environ.get("VAULT_DIR") or data_path("vault"))
+_VAULT_ROOT = Path(os.environ.get("VAULT_DIR") or data_path("vault"))
+
+
+def vault_dir(account_id: str) -> Path:
+    """One account's notes. Notes are FILES, so ownership has to be a directory.
+
+    A shared directory would mean two accounts writing `projects/plan.md` write
+    the SAME file — the database predicate would be perfectly correct and the
+    data would still be shared, because the rows point at one path on disk.
+    That is the failure a column alone cannot prevent.
+
+    Anything already sitting at the old flat root is moved into the single
+    tenant's directory on first use. Honest only while there is one tenant,
+    which is exactly why it is happening now.
+    """
+    _VAULT_ROOT.mkdir(parents=True, exist_ok=True)
+    _migrate_flat_layout()
+    d = _VAULT_ROOT / account_id
+    d.mkdir(parents=True, exist_ok=True)
+    (d / _ASSETS).mkdir(exist_ok=True)
+    return d
+
+
+_flat_migrated = False
+
+
+def _migrate_flat_layout() -> None:
+    """Move pre-ownership notes from <root>/ into <root>/<single tenant>/."""
+    global _flat_migrated
+    if _flat_migrated:
+        return
+    _flat_migrated = True
+    from .accounts import SINGLE_TENANT
+    target = _VAULT_ROOT / SINGLE_TENANT.id
+    strays = [c for c in _VAULT_ROOT.iterdir()
+              if c.name != SINGLE_TENANT.id and (c.is_file() or c.name == _ASSETS
+                                                 or not _looks_like_account_dir(c))]
+    if not strays:
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    import shutil
+    moved = 0
+    for c in strays:
+        dest = target / c.name
+        if dest.exists():
+            continue                     # already migrated; never overwrite
+        shutil.move(str(c), str(dest))
+        moved += 1
+    if moved:
+        print(f"[vault] moved {moved} pre-ownership item(s) into {target.name}/",
+              flush=True)
+
+
+def _looks_like_account_dir(p: Path) -> bool:
+    """A uuid-shaped directory name is an account, not a note folder."""
+    return p.is_dir() and len(p.name) == 36 and p.name.count("-") == 4
 _ASSETS = "_assets"
 _DB_PATH = data_path("vault.db")
 
@@ -71,7 +126,15 @@ _LOCK = threading.Lock()
 _conn: sqlite3.Connection | None = None
 _fts_ok = True
 _last_scan = 0.0
-_vec_cache: dict[str, Any] = {"dirty": True, "ids": [], "mat": None}
+# ONE MATRIX PER ACCOUNT. A single shared cache served whichever account asked
+# first to every account that asked later — the SQL was correctly scoped and the
+# results still crossed tenants, because the query never ran. Cached data needs
+# the same predicate as the query it stands in for.
+_vec_cache: dict[str, dict[str, Any]] = {}
+
+
+def _cache_for(account_id: str) -> dict[str, Any]:
+    return _vec_cache.setdefault(account_id, {"dirty": True, "ids": [], "mat": None})
 
 _FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#\n]+)(?:[|#][^\]]*)?\]\]")
@@ -85,8 +148,7 @@ _utility = None
 def init(utility_llm) -> None:
     global _utility
     _utility = utility_llm
-    VAULT_DIR.mkdir(parents=True, exist_ok=True)
-    (VAULT_DIR / _ASSETS).mkdir(exist_ok=True)
+    # directories are created lazily by vault_dir(account_id)
 
 
 # ── clean, readable notes (summarize long/raw extractions) ───────────────────
@@ -160,6 +222,79 @@ async def _try_summarize(title: str, clean: str) -> str:
 
 # ── storage ──────────────────────────────────────────────────────────────────
 
+def _migrate_ownership(db: sqlite3.Connection) -> None:
+    """Give every vault row an owner. Idempotent; safe to run on every boot.
+
+    THE HARD PART IS `nodes`. Its `slug` and `rel_path` were declared UNIQUE
+    globally, and SQLite cannot drop a constraint — so those have to become
+    UNIQUE(owner_account_id, ...) via a table rebuild rather than an ALTER.
+    A global slug would mean two accounts could never own a note called the
+    same thing, and the second one to try would get a constraint error from
+    somebody else's data.
+
+    SLUGS ARE ACCOUNT-LOCAL, not org-shared. DIRECTION.md's answer to "who can
+    see this" is scope, and the owner's instruction was that knowledge is
+    personal for now. It is also the reversible direction: an org-shared alias
+    layer can be added on top later, whereas narrowing a shared namespace would
+    break every existing [[wikilink]].
+
+    `chunks` and `edges` carry the owner DENORMALISED rather than joining to
+    `nodes`. _vec_matrix() selects from `chunks` alone and must filter without a
+    join, and an owner predicate that depends on a join is one refactor away
+    from being dropped.
+    """
+    from .accounts import SINGLE_TENANT
+    owner, org = SINGLE_TENANT.id, SINGLE_TENANT.org_id
+
+    have = {r[1] for r in db.execute("PRAGMA table_info(nodes)").fetchall()}
+    if "owner_account_id" not in have:
+        db.executescript(
+            """
+            CREATE TABLE nodes_owned (
+                id TEXT PRIMARY KEY,
+                owner_account_id TEXT NOT NULL,
+                org_id TEXT NOT NULL DEFAULT '',
+                scope TEXT NOT NULL DEFAULT 'personal',
+                slug TEXT NOT NULL,
+                title TEXT NOT NULL,
+                rel_path TEXT NOT NULL,
+                domain TEXT NOT NULL, tags TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'note',
+                source_ref TEXT NOT NULL DEFAULT '',
+                created REAL NOT NULL, updated REAL NOT NULL,
+                mtime REAL NOT NULL, chars INTEGER NOT NULL,
+                UNIQUE(owner_account_id, slug),
+                UNIQUE(owner_account_id, rel_path)
+            );
+            """
+        )
+        db.execute(
+            "INSERT INTO nodes_owned (id, owner_account_id, org_id, slug, title,"
+            " rel_path, domain, tags, source_kind, source_ref, created, updated,"
+            " mtime, chars)"
+            " SELECT id, ?, ?, slug, title, rel_path, domain, tags, source_kind,"
+            "        source_ref, created, updated, mtime, chars FROM nodes",
+            (owner, org),
+        )
+        db.execute("DROP TABLE nodes")
+        db.execute("ALTER TABLE nodes_owned RENAME TO nodes")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_nodes_owner ON nodes(owner_account_id)")
+
+    # chunks / edges: a plain column each, backfilled from the node they belong to.
+    for table, via in (("chunks", "node_id"), ("edges", "src")):
+        cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})").fetchall()}
+        if "owner_account_id" not in cols:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN owner_account_id TEXT")
+            db.execute(
+                f"UPDATE {table} SET owner_account_id ="
+                f" COALESCE((SELECT n.owner_account_id FROM nodes n WHERE n.id = {table}.{via}), ?)",
+                (owner,),
+            )
+        db.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_owner"
+                   f" ON {table}(owner_account_id)")
+    db.commit()
+
+
 def _db() -> sqlite3.Connection:
     global _conn, _fts_ok
     if _conn is None:
@@ -190,6 +325,8 @@ def _db() -> sqlite3.Connection:
             );
             """
         )
+        _migrate_ownership(_conn)
+
         # A VECTOR WITHOUT ITS PROVENANCE IS NOT COMPARABLE TO ANYTHING.
         #
         # `vec` used to be a bare BLOB. Two models produce vectors that are not
@@ -209,19 +346,61 @@ def _db() -> sqlite3.Connection:
         for col, decl in (("model", "TEXT"), ("dim", "INTEGER")):
             if col not in have:
                 _conn.execute(f"ALTER TABLE chunks ADD COLUMN {col} {decl}")
+        # FTS carries the owner too, or keyword search answers what vector
+        # search refuses. It is a VIRTUAL table so it cannot be ALTERed — but it
+        # is also pure derived data, rebuildable from chunks.text, so dropping
+        # and repopulating costs nothing but time.
         try:
+            cur = _conn.execute("PRAGMA table_info(fts)").fetchall()
+            if cur and not any(r[1] == "owner_account_id" for r in cur):
+                _conn.execute("DROP TABLE fts")
             _conn.execute(
                 "CREATE VIRTUAL TABLE IF NOT EXISTS fts USING fts5"
-                "(text, node_id UNINDEXED, chunk_id UNINDEXED)"
+                "(text, node_id UNINDEXED, chunk_id UNINDEXED, owner_account_id UNINDEXED)"
             )
+            # Dropping it above leaves it empty. Repopulate from chunks, which
+            # is the source of truth — otherwise keyword search silently returns
+            # nothing and looks exactly like an empty vault.
+            n_fts = _conn.execute("SELECT COUNT(*) FROM fts").fetchone()[0]
+            n_chunks = _conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            if n_chunks and not n_fts:
+                _conn.execute(
+                    "INSERT INTO fts (text, node_id, chunk_id, owner_account_id)"
+                    " SELECT text, node_id, id, owner_account_id FROM chunks"
+                )
+                print(f"[vault] rebuilt the keyword index for {n_chunks} chunk(s)",
+                      flush=True)
         except sqlite3.OperationalError:
             _fts_ok = False  # keyword search degrades to LIKE
         _conn.commit()
     return _conn
 
 
+def _account_id() -> str:
+    """Whose vault this request touches.
+
+    One tenant today, and the app-level auth dependency has already verified the
+    session before any route runs. A function rather than a constant so that
+    when identity lands this becomes a request dependency and every call site is
+    already asking the right question.
+    """
+    from .accounts import SINGLE_TENANT
+    return SINGLE_TENANT.id
+
+
+def _account_id_dep() -> str:
+    """FastAPI-dependency form of _account_id().
+
+    A dependency rather than a keyword-only argument because FastAPI would read
+    a bare `account_id: str` off the QUERY STRING — letting the caller name the
+    account whose vault they wanted to read, which is the opposite of the point.
+    """
+    return _account_id()
+
+
 def _mark_dirty() -> None:
-    _vec_cache["dirty"] = True
+    for c in _vec_cache.values():
+        c["dirty"] = True
 
 
 # ── markdown node format ─────────────────────────────────────────────────────
@@ -393,10 +572,11 @@ def _domain_from_rel(rel: Path) -> list[str]:
     return list(parts[:3]) or ["Inbox"]
 
 
-async def _index_file(abs_path: Path) -> str | None:
+async def _index_file(abs_path: Path, *, account_id: str) -> str | None:
     """(Re)index one note file. Returns node id. Folders are authoritative
     for domain (Obsidian moves must win); frontmatter carries identity."""
-    rel = abs_path.relative_to(VAULT_DIR)
+    root = vault_dir(account_id)
+    rel = abs_path.relative_to(root)
     try:
         raw = abs_path.read_text("utf-8", errors="replace")
     except Exception:
@@ -406,7 +586,12 @@ async def _index_file(abs_path: Path) -> str | None:
     if not title:
         h = re.search(r"^#\s+(.+)$", body, re.MULTILINE)
         title = (h.group(1).strip() if h else abs_path.stem.replace("-", " "))[:120]
-    node_id = meta.get("id") or f"nd_{abs(hash(str(rel))) % 10**10:010d}"
+    # `id` is the global PRIMARY KEY, so it must include the owner. Derived from
+    # the path alone, two accounts with the same relative path produced the SAME
+    # id and the second one's note was rejected with a constraint error against a
+    # row they cannot see. Deterministic (not random) so re-indexing a file keeps
+    # its identity, which is what makes the upsert an upsert.
+    node_id = meta.get("id") or f"nd_{abs(hash((account_id, str(rel)))) % 10**10:010d}"
     slug = _slugify(meta.get("title") or abs_path.stem)
     domain = _domain_from_rel(rel)
     tags = [t.strip() for t in (meta.get("tags") or "").split(",") if t.strip()]
@@ -437,7 +622,8 @@ async def _index_file(abs_path: Path) -> str | None:
         # working vectors with nulls.
         with _LOCK:
             already = _db().execute(
-                "SELECT COUNT(*) FROM chunks WHERE node_id=?", (node_id,)).fetchone()[0]
+                "SELECT COUNT(*) FROM chunks WHERE node_id=? AND owner_account_id=?",
+                (node_id, account_id)).fetchone()[0]
         if already:
             print(f"[vault] not re-indexing {rel} while embedding is paused — "
                   f"its existing vectors are left intact", flush=True)
@@ -450,22 +636,23 @@ async def _index_file(abs_path: Path) -> str | None:
 
     with _LOCK:
         db = _db()
-        db.execute("DELETE FROM chunks WHERE node_id=?", (node_id,))
+        db.execute("DELETE FROM chunks WHERE node_id=? AND owner_account_id=?", (node_id, account_id))
         if _fts_ok:
-            db.execute("DELETE FROM fts WHERE node_id=?", (node_id,))
-        db.execute("DELETE FROM edges WHERE src=?", (node_id,))
+            db.execute("DELETE FROM fts WHERE node_id=? AND owner_account_id=?", (node_id, account_id))
+        db.execute("DELETE FROM edges WHERE src=? AND owner_account_id=?", (node_id, account_id))
         db.execute(
-            """INSERT INTO nodes (id, slug, title, rel_path, domain, tags,
+            """INSERT INTO nodes (id, owner_account_id, org_id, slug, title,
+                                  rel_path, domain, tags,
                                   source_kind, source_ref, created, updated,
                                   mtime, chars)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(rel_path) DO UPDATE SET
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(owner_account_id, rel_path) DO UPDATE SET
                    id=excluded.id, slug=excluded.slug, title=excluded.title,
                    domain=excluded.domain, tags=excluded.tags,
                    source_kind=excluded.source_kind, source_ref=excluded.source_ref,
                    updated=excluded.updated, mtime=excluded.mtime,
                    chars=excluded.chars""",
-            (node_id, slug, title, str(rel).replace("\\", "/"),
+            (node_id, account_id, "", slug, title, str(rel).replace("\\", "/"),
              json.dumps(domain), json.dumps(tags), kind or "note", ref,
              created, time.time(), mtime, len(body)),
         )
@@ -475,49 +662,55 @@ async def _index_file(abs_path: Path) -> str | None:
         emodel, edim = active_model(), active_dim()
         for i, (ch, vb) in enumerate(zip(chunks, vecs)):
             cur = db.execute(
-                "INSERT INTO chunks (node_id, ord, text, vec, model, dim) "
-                "VALUES (?,?,?,?,?,?)",
+                "INSERT INTO chunks (node_id, ord, text, vec, model, dim,"
+                " owner_account_id) VALUES (?,?,?,?,?,?,?)",
                 (node_id, i, ch, vb,
                  emodel if vb is not None else None,
-                 edim if vb is not None else None),
+                 edim if vb is not None else None,
+                 account_id),
             )
             if _fts_ok:
-                db.execute("INSERT INTO fts (text, node_id, chunk_id) VALUES (?,?,?)",
-                           (ch, node_id, cur.lastrowid))
+                db.execute(
+                    "INSERT INTO fts (text, node_id, chunk_id, owner_account_id)"
+                    " VALUES (?,?,?,?)",
+                    (ch, node_id, cur.lastrowid, account_id))
         for target_slug in links:
-            row = db.execute("SELECT id FROM nodes WHERE slug=?",
-                             (target_slug,)).fetchone()
+            row = db.execute(
+                "SELECT id FROM nodes WHERE owner_account_id=? AND slug=?",
+                (account_id, target_slug)).fetchone()
             if row:
                 db.execute(
-                    "INSERT OR IGNORE INTO edges (src,dst,kind) VALUES (?,?,'link')",
-                    (node_id, row[0]),
+                    "INSERT OR IGNORE INTO edges (src,dst,kind,owner_account_id)"
+                    " VALUES (?,?,'link',?)",
+                    (node_id, row[0], account_id),
                 )
         db.commit()
     _mark_dirty()
     return node_id
 
 
-async def scan(force: bool = False) -> dict[str, int]:
+async def scan(force: bool = False, *, account_id: str) -> dict[str, int]:
     """Reconcile vault files ↔ index by mtime. Cheap when nothing changed."""
     global _last_scan
     now = time.monotonic()
     if not force and now - _last_scan < _SCAN_EVERY_S:
         return {"scanned": 0, "indexed": 0, "removed": 0}
     _last_scan = now
-    VAULT_DIR.mkdir(parents=True, exist_ok=True)
+    root = vault_dir(account_id)
     seen: set[str] = set()
     indexed = 0
-    files = [p for p in VAULT_DIR.rglob("*.md")
-             if _ASSETS not in p.relative_to(VAULT_DIR).parts]
+    files = [p for p in root.rglob("*.md")
+             if _ASSETS not in p.relative_to(root).parts]
     with _LOCK:
         known = {r[0]: r[1] for r in
-                 _db().execute("SELECT rel_path, mtime FROM nodes").fetchall()}
+                 _db().execute("SELECT rel_path, mtime FROM nodes WHERE owner_account_id=?",
+                            (account_id,)).fetchall()}
     for p in files:
-        rel = str(p.relative_to(VAULT_DIR)).replace("\\", "/")
+        rel = str(p.relative_to(root)).replace("\\", "/")
         seen.add(rel)
         try:
             if abs(known.get(rel, -1) - p.stat().st_mtime) > 1e-6:
-                if await _index_file(p) is not None:
+                if await _index_file(p, account_id=account_id) is not None:
                     indexed += 1
         except Exception as e:
             print(f"[vault] index {rel}: {type(e).__name__}: {e}", flush=True)
@@ -534,7 +727,7 @@ async def scan(force: bool = False) -> dict[str, int]:
     missing = set(known) - seen
     if missing and not files and known:
         print(f"[vault] REFUSING to delete {len(missing)} indexed notes: "
-              f"{VAULT_DIR} scanned empty. This is what a missing or unmounted "
+              f"{root} scanned empty. This is what a missing or unmounted "
               f"volume looks like, not an empty vault. Index left intact.",
               flush=True)
         return {"scanned": 0, "indexed": indexed, "removed": 0, "protected": len(missing)}
@@ -543,14 +736,15 @@ async def scan(force: bool = False) -> dict[str, int]:
     with _LOCK:
         db = _db()
         for rel in missing:
-            row = db.execute("SELECT id FROM nodes WHERE rel_path=?", (rel,)).fetchone()
+            row = db.execute("SELECT id FROM nodes WHERE owner_account_id=? AND rel_path=?",
+                             (account_id, rel)).fetchone()
             if row:
                 nid = row[0]
-                db.execute("DELETE FROM chunks WHERE node_id=?", (nid,))
+                db.execute("DELETE FROM chunks WHERE node_id=? AND owner_account_id=?", (nid, account_id))
                 if _fts_ok:
-                    db.execute("DELETE FROM fts WHERE node_id=?", (nid,))
-                db.execute("DELETE FROM edges WHERE src=? OR dst=?", (nid, nid))
-                db.execute("DELETE FROM nodes WHERE id=?", (nid,))
+                    db.execute("DELETE FROM fts WHERE node_id=? AND owner_account_id=?", (nid, account_id))
+                db.execute("DELETE FROM edges WHERE owner_account_id=? AND (src=? OR dst=?)", (account_id, nid, nid))
+                db.execute("DELETE FROM nodes WHERE id=? AND owner_account_id=?", (nid, account_id))
                 removed += 1
         db.commit()
     if removed:
@@ -560,9 +754,10 @@ async def scan(force: bool = False) -> dict[str, int]:
 
 # ── categorization + creation ────────────────────────────────────────────────
 
-def _domain_tree(max_depth: int = 2) -> list[str]:
+def _domain_tree(max_depth: int = 2, *, account_id: str) -> list[str]:
     with _LOCK:
-        rows = _db().execute("SELECT domain FROM nodes").fetchall()
+        rows = _db().execute("SELECT domain FROM nodes WHERE owner_account_id=?",
+                             (account_id,)).fetchall()
     seen: dict[str, None] = {}
     for (dj,) in rows:
         try:
@@ -574,7 +769,7 @@ def _domain_tree(max_depth: int = 2) -> list[str]:
     return sorted(seen)
 
 
-async def classify_domain(title: str, text: str,
+async def classify_domain(title: str, text: str, *, account_id: str,
                           hint: list[str] | None = None) -> list[str]:
     """Utility-LLM domain path, validated hard, biased to the existing tree.
     Fallback: ['Inbox'] — never blocks an ingest."""
@@ -584,7 +779,7 @@ async def classify_domain(title: str, text: str,
             return clean
     if _utility is None:
         return ["Inbox"]
-    tree = _domain_tree()
+    tree = _domain_tree(account_id=account_id)
     tree_txt = "\n".join(f"- {t}" for t in tree[:80]) or "- (empty)"
     raw = await _utility(
         "Categorize this note into a knowledge-tree path, 1-3 levels, "
@@ -606,8 +801,8 @@ async def classify_domain(title: str, text: str,
     return ["Inbox"]
 
 
-async def _related_slugs(text: str, exclude_node: str | None, k: int = _LINK_K) -> list[str]:
-    hits = await _vector_search(text[:2000], k * 3)
+async def _related_slugs(text: str, exclude_node: str | None, k: int = _LINK_K, *, account_id: str) -> list[str]:
+    hits = await _vector_search(text[:2000], k * 3, account_id=account_id)
     out: list[str] = []
     seen: set[str] = set()
     for h in hits:
@@ -622,7 +817,7 @@ async def _related_slugs(text: str, exclude_node: str | None, k: int = _LINK_K) 
     return out
 
 
-async def write_node(*, title: str, body: str, domain: list[str] | None = None,
+async def write_node(*, account_id: str, title: str, body: str, domain: list[str] | None = None,
                      tags: list[str] | None = None, source_kind: str = "note",
                      source_ref: str = "") -> dict[str, Any]:
     """Create a note: classify → place in the tree → auto-link → write file
@@ -631,16 +826,16 @@ async def write_node(*, title: str, body: str, domain: list[str] | None = None,
     body = (body or "").strip()
     if not body:
         raise HTTPException(status_code=422, detail="empty note body")
-    dom = domain or await classify_domain(title, body)
-    related = await _related_slugs(body, exclude_node=None)
+    dom = domain or await classify_domain(title, body, account_id=account_id)
+    related = await _related_slugs(body, exclude_node=None, account_id=account_id)
     if related:
         body += "\n\n## Related\n" + "\n".join(f"- [[{s}]]" for s in related)
 
-    folder = VAULT_DIR.joinpath(*dom)
+    folder = vault_dir(account_id).joinpath(*dom)
     folder.mkdir(parents=True, exist_ok=True)
     slug = base = _slugify(title)
     i = 2
-    while (folder / f"{slug}.md").exists() or _slug_taken(slug):
+    while (folder / f"{slug}.md").exists() or _slug_taken(slug, account_id=account_id):
         slug = f"{base}-{i}"
         i += 1
     from datetime import datetime, timezone
@@ -655,24 +850,25 @@ async def write_node(*, title: str, body: str, domain: list[str] | None = None,
     }
     path = folder / f"{slug}.md"
     path.write_text(_render_note(meta, body), "utf-8")
-    node_id = await _index_file(path)
+    node_id = await _index_file(path, account_id=account_id)
     return {"id": node_id, "slug": slug, "title": title, "domain": dom,
-            "rel_path": str(path.relative_to(VAULT_DIR)).replace("\\", "/"),
+            "rel_path": str(path.relative_to(vault_dir(account_id))).replace("\\", "/"),
             "linked": related}
 
 
-def _slug_taken(slug: str) -> bool:
+def _slug_taken(slug: str, *, account_id: str) -> bool:
     with _LOCK:
-        return _db().execute("SELECT 1 FROM nodes WHERE slug=?",
-                             (slug,)).fetchone() is not None
+        return _db().execute(
+            "SELECT 1 FROM nodes WHERE owner_account_id=? AND slug=?",
+            (account_id, slug)).fetchone() is not None
 
 
-async def file_report(title: str, text: str, *, source_kind: str,
+async def file_report(title: str, text: str, *, account_id: str, source_kind: str,
                       source_ref: str = "") -> dict[str, Any] | None:
     """Reports the OS generates land back as notes (the learn-with-me loop).
     Soft-fails — a vault hiccup must never break the producing feature."""
     try:
-        return await write_node(title=title, body=text,
+        return await write_node(account_id=account_id, title=title, body=text,
                                 source_kind=source_kind, source_ref=source_ref)
     except Exception as e:
         print(f"[vault] file_report failed (non-fatal): {e}", flush=True)
@@ -681,7 +877,7 @@ async def file_report(title: str, text: str, *, source_kind: str,
 
 # ── retrieval ────────────────────────────────────────────────────────────────
 
-def _vec_matrix() -> tuple[list[tuple[int, str]], Any]:
+def _vec_matrix(*, account_id: str) -> tuple[list[tuple[int, str]], Any]:
     """(chunk meta, normalized matrix) — cached until the index changes.
 
     ONLY rows produced by the ACTIVE model at the ACTIVE dimension are loaded.
@@ -691,20 +887,21 @@ def _vec_matrix() -> tuple[list[tuple[int, str]], Any]:
     before provenance existed have model NULL and are treated as unusable —
     /vault/reindex re-embeds them.
     """
-    if not _vec_cache["dirty"] and _vec_cache["mat"] is not None:
-        return _vec_cache["ids"], _vec_cache["mat"]
+    cache = _cache_for(account_id)
+    if not cache["dirty"] and cache["mat"] is not None:
+        return cache["ids"], cache["mat"]
 
     from .providers.embeddings import active_dim, active_model
     model, dim = active_model(), active_dim()
     if not model or not dim:
-        _vec_cache.update(ids=[], mat=None, dirty=False)
+        cache.update(ids=[], mat=None, dirty=False)
         return [], None
 
     with _LOCK:
         rows = _db().execute(
             "SELECT id, node_id, vec FROM chunks "
-            "WHERE vec IS NOT NULL AND model = ? AND dim = ?",
-            (model, dim),
+            "WHERE owner_account_id = ? AND vec IS NOT NULL AND model = ? AND dim = ?",
+            (account_id, model, dim),
         ).fetchall()
     # Belt and braces: a row whose blob length disagrees with its own recorded
     # dim would still break the reshape below, and one bad row must not take
@@ -717,49 +914,51 @@ def _vec_matrix() -> tuple[list[tuple[int, str]], Any]:
     ids = [(r[0], r[1]) for r in good]
     mat = (np.frombuffer(b"".join(r[2] for r in good), dtype=np.float32)
            .reshape(len(good), dim) if good else None)
-    _vec_cache.update(ids=ids, mat=mat, dirty=False)
+    cache.update(ids=ids, mat=mat, dirty=False)
     return ids, mat
 
 
-def _node_meta(node_ids: list[str]) -> dict[str, dict]:
+def _node_meta(node_ids: list[str], *, account_id: str) -> dict[str, dict]:
     if not node_ids:
         return {}
     q = ",".join("?" * len(node_ids))
     with _LOCK:
         rows = _db().execute(
-            f"SELECT id, slug, title, domain FROM nodes WHERE id IN ({q})",
-            node_ids,
+            f"SELECT id, slug, title, domain FROM nodes WHERE owner_account_id=? AND id IN ({q})",
+            [account_id, *node_ids],
         ).fetchall()
     return {r[0]: {"slug": r[1], "title": r[2], "domain": json.loads(r[3])}
             for r in rows}
 
 
-async def _vector_search(query: str, k: int) -> list[dict]:
+async def _vector_search(query: str, k: int, *, account_id: str) -> list[dict]:
     # "query", not "document": the same sentence embeds differently as a
     # question than as stored text, and getting this wrong degrades every
     # result without failing anything.
     vb = await _embed(query, input_type="query")
     if vb is None:
         return []
-    ids, mat = _vec_matrix()
+    ids, mat = _vec_matrix(account_id=account_id)
     if mat is None or not len(ids):
         return []
     qv = np.frombuffer(vb, dtype=np.float32)
     sims = mat @ qv
     order = np.argsort(-sims)[:k]
-    metas = _node_meta(list({ids[i][1] for i in order}))
+    metas = _node_meta(list({ids[i][1] for i in order}), account_id=account_id)
     out = []
     with _LOCK:
         for i in order:
             cid, nid = ids[i]
-            row = _db().execute("SELECT text FROM chunks WHERE id=?", (cid,)).fetchone()
+            row = _db().execute(
+                "SELECT text FROM chunks WHERE id=? AND owner_account_id=?",
+                (cid, account_id)).fetchone()
             m = metas.get(nid, {})
             out.append({"chunk_id": cid, "node_id": nid, "score": float(sims[i]),
                         "text": row[0] if row else "", **m})
     return out
 
 
-def _keyword_search(query: str, k: int) -> list[dict]:
+def _keyword_search(query: str, k: int, *, account_id: str) -> list[dict]:
     with _LOCK:
         db = _db()
         rows: list = []
@@ -768,27 +967,29 @@ def _keyword_search(query: str, k: int) -> list[dict]:
                 safe = " ".join(re.findall(r"[\w']+", query)) or query
                 rows = db.execute(
                     "SELECT chunk_id, node_id, text, bm25(fts) FROM fts "
-                    "WHERE fts MATCH ? ORDER BY bm25(fts) LIMIT ?",
-                    (safe, k),
+                    "WHERE owner_account_id = ? AND fts MATCH ? "
+                    "ORDER BY bm25(fts) LIMIT ?",
+                    (account_id, safe, k),
                 ).fetchall()
             except sqlite3.OperationalError:
                 rows = []
         if not rows:
             like = f"%{query[:60]}%"
             rows = [(r[0], r[1], r[2], 0.0) for r in db.execute(
-                "SELECT id, node_id, text, 0 FROM chunks WHERE text LIKE ? LIMIT ?",
-                (like, k),
+                "SELECT id, node_id, text, 0 FROM chunks"
+                " WHERE owner_account_id = ? AND text LIKE ? LIMIT ?",
+                (account_id, like, k),
             ).fetchall()]
-    metas = _node_meta(list({r[1] for r in rows}))
+    metas = _node_meta(list({r[1] for r in rows}), account_id=account_id)
     return [{"chunk_id": r[0], "node_id": r[1], "text": r[2],
              "score": 0.0, **metas.get(r[1], {})} for r in rows]
 
 
-async def retrieve(question: str, k: int = 8) -> list[dict]:
+async def retrieve(question: str, k: int = 8, *, account_id: str) -> list[dict]:
     """Hybrid retrieval: vector + keyword fused by reciprocal rank, then
     1-hop graph expansion from the top nodes."""
-    vec = await _vector_search(question, k * 2)
-    kw = _keyword_search(question, k)
+    vec = await _vector_search(question, k * 2, account_id=account_id)
+    kw = _keyword_search(question, k, account_id=account_id)
     fused: dict[int, dict] = {}
     for rank, h in enumerate(vec):
         f = fused.setdefault(h["chunk_id"], {**h, "rrf": 0.0})
@@ -804,17 +1005,18 @@ async def retrieve(question: str, k: int = 8) -> list[dict]:
         q = ",".join("?" * len(top_nodes))
         with _LOCK:
             nbrs = [r[0] for r in _db().execute(
-                f"SELECT DISTINCT dst FROM edges WHERE src IN ({q}) "
-                f"UNION SELECT DISTINCT src FROM edges WHERE dst IN ({q})",
-                top_nodes + top_nodes,
+                f"SELECT DISTINCT dst FROM edges WHERE owner_account_id=? AND src IN ({q}) "
+                f"UNION SELECT DISTINCT src FROM edges WHERE owner_account_id=? AND dst IN ({q})",
+                [account_id, *top_nodes, account_id, *top_nodes],
             ).fetchall() if r[0] not in top_nodes][:4]
         if nbrs:
-            metas = _node_meta(nbrs)
+            metas = _node_meta(nbrs, account_id=account_id)
             with _LOCK:
                 for nid in nbrs:
                     row = _db().execute(
-                        "SELECT id, text FROM chunks WHERE node_id=? ORDER BY ord LIMIT 1",
-                        (nid,),
+                        "SELECT id, text FROM chunks WHERE node_id=? AND owner_account_id=?"
+                        " ORDER BY ord LIMIT 1",
+                        (nid, account_id),
                     ).fetchone()
                     if row and all(h["chunk_id"] != row[0] for h in ranked):
                         ranked.append({"chunk_id": row[0], "node_id": nid,
@@ -834,8 +1036,8 @@ class IngestIn(BaseModel):
 
 
 @router.post("/ingest")
-async def vault_ingest(body: IngestIn) -> dict:
-    await scan()
+async def vault_ingest(body: IngestIn, account_id: str = Depends(_account_id_dep)) -> dict:
+    await scan(account_id=account_id)
     if body.url:
         # Routed through app.browse: SSRF-hardened fetch + real extraction.
         # (Replaces a raw httpx.get + regex title + the retired rag helper.)
@@ -846,13 +1048,13 @@ async def vault_ingest(body: IngestIn) -> dict:
             raise HTTPException(status_code=422, detail="no readable text at URL")
         title = (body.title or page.title or body.url).strip()
         summary = await _summarize_note(title[:120], text)
-        node = await write_node(title=title[:120], body=summary,
+        node = await write_node(account_id=account_id, title=title[:120], body=summary,
                                 domain=body.domain, tags=body.tags,
                                 source_kind="url", source_ref=body.url[:300])
         return {"ok": True, "node": node}
     if body.text and body.text.strip():
         title = body.title or body.text.strip().splitlines()[0][:80]
-        node = await write_node(title=title, body=body.text.strip(),
+        node = await write_node(account_id=account_id, title=title, body=body.text.strip(),
                                 domain=body.domain, tags=body.tags,
                                 source_kind="text")
         return {"ok": True, "node": node}
@@ -865,8 +1067,9 @@ _AUD_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".webm", ".flac"}
 
 
 @router.post("/ingest/file")
-async def vault_ingest_file(file: UploadFile = File(...)) -> dict:
-    await scan()
+async def vault_ingest_file(file: UploadFile = File(...),
+                            account_id: str = Depends(_account_id_dep)) -> dict:
+    await scan(account_id=account_id)
     blob = await file.read()
     if not blob:
         raise HTTPException(status_code=422, detail="empty file")
@@ -902,19 +1105,19 @@ async def vault_ingest_file(file: UploadFile = File(...)) -> dict:
                 raise HTTPException(status_code=422,
                                     detail="no text in document (extraction + OCR found nothing)")
         body = await _summarize_note(stem, text)
-        node = await write_node(title=stem, body=body,
+        node = await write_node(account_id=account_id, title=stem, body=body,
                                 source_kind="file", source_ref=name[:200])
         return {"ok": True, "node": node, "kind": "document"}
 
     if ext in _IMG_EXTS:
-        asset_dir = VAULT_DIR / _ASSETS
+        asset_dir = vault_dir(account_id) / _ASSETS
         asset_dir.mkdir(parents=True, exist_ok=True)
         asset = asset_dir / f"{_slugify(stem)}-{int(time.time())}{ext}"
         asset.write_bytes(blob)
         caption = await _caption_image(blob, ext)
         body_md = (f"![[{_ASSETS}/{asset.name}]]\n\n{caption}"
                    if caption else f"![[{_ASSETS}/{asset.name}]]\n\n(uncaptioned)")
-        node = await write_node(title=stem, body=body_md,
+        node = await write_node(account_id=account_id, title=stem, body=body_md,
                                 source_kind="image", source_ref=asset.name)
         return {"ok": True, "node": node, "kind": "image",
                 "captioned": bool(caption)}
@@ -974,12 +1177,12 @@ class QueryIn(BaseModel):
 
 
 @router.post("/query")
-async def vault_query(body: QueryIn) -> dict:
-    await scan()
+async def vault_query(body: QueryIn, account_id: str = Depends(_account_id_dep)) -> dict:
+    await scan(account_id=account_id)
     q = (body.question or "").strip()
     if not q:
         raise HTTPException(status_code=422, detail="empty question")
-    hits = await retrieve(q, max(2, min(16, body.k)))
+    hits = await retrieve(q, max(2, min(16, body.k)), account_id=account_id)
     sources = [{"node_id": h["node_id"], "slug": h.get("slug", ""),
                 "title": h.get("title", ""), "domain": h.get("domain", []),
                 "score": round(h.get("rrf", 0.0), 4)} for h in hits]
@@ -1015,12 +1218,13 @@ async def vault_query(body: QueryIn) -> dict:
 
 
 @router.get("/tree")
-async def vault_tree() -> dict:
-    await scan()
+async def vault_tree(account_id: str = Depends(_account_id_dep)) -> dict:
+    await scan(account_id=account_id)
     with _LOCK:
         rows = _db().execute(
             "SELECT id, slug, title, domain, chars, updated FROM nodes "
-            "ORDER BY domain, title"
+            "WHERE owner_account_id=? ORDER BY domain, title",
+            (account_id,)
         ).fetchall()
     tree: dict[str, Any] = {}
     for nid, slug, title, dj, chars, updated in rows:
@@ -1035,18 +1239,20 @@ async def vault_tree() -> dict:
 
 
 @router.get("/graph")
-async def vault_graph(limit: int = Query(1500, ge=10, le=5000)) -> dict:
-    await scan()
+async def vault_graph(limit: int = Query(1500, ge=10, le=5000),
+                      account_id: str = Depends(_account_id_dep)) -> dict:
+    await scan(account_id=account_id)
     with _LOCK:
         db = _db()
         nodes = db.execute(
             "SELECT id, slug, title, domain, chars FROM nodes "
-            "ORDER BY updated DESC LIMIT ?", (limit,),
+            "WHERE owner_account_id=? ORDER BY updated DESC LIMIT ?",
+            (account_id, limit),
         ).fetchall()
         ids = {n[0] for n in nodes}
         edges = [
             {"src": s, "dst": d, "kind": k}
-            for s, d, k in db.execute("SELECT src, dst, kind FROM edges").fetchall()
+            for s, d, k in db.execute("SELECT src, dst, kind FROM edges WHERE owner_account_id=?", (account_id,)).fetchall()
             if s in ids and d in ids
         ]
     deg: dict[str, int] = {}
@@ -1062,16 +1268,17 @@ async def vault_graph(limit: int = Query(1500, ge=10, le=5000)) -> dict:
 
 
 @router.get("/node/{node_id}")
-async def vault_node(node_id: str) -> dict:
+async def vault_node(node_id: str, account_id: str = Depends(_account_id_dep)) -> dict:
     with _LOCK:
         row = _db().execute(
             "SELECT id, slug, title, rel_path, domain, tags, source_kind, "
-            "source_ref, created, updated FROM nodes WHERE id=? OR slug=?",
-            (node_id, node_id),
+            "source_ref, created, updated FROM nodes "
+            "WHERE owner_account_id=? AND (id=? OR slug=?)",
+            (account_id, node_id, node_id),
         ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="unknown note")
-    path = VAULT_DIR / row[3]
+    path = vault_dir(account_id) / row[3]
     try:
         _meta, body = _parse_note(path.read_text("utf-8", errors="replace"))
     except Exception:
@@ -1084,9 +1291,10 @@ async def vault_node(node_id: str) -> dict:
 
 @router.get("/search")
 async def vault_search(q: str = Query(..., min_length=1, max_length=200),
-                       k: int = Query(10, ge=1, le=30)) -> dict:
-    await scan()
-    hits = await retrieve(q, k)
+                       k: int = Query(10, ge=1, le=30),
+                       account_id: str = Depends(_account_id_dep)) -> dict:
+    await scan(account_id=account_id)
+    hits = await retrieve(q, k, account_id=account_id)
     out = {"items": [{"node_id": h["node_id"], "slug": h.get("slug", ""),
                       "title": h.get("title", ""),
                       "domain": h.get("domain", []),
@@ -1111,23 +1319,24 @@ async def vault_search(q: str = Query(..., min_length=1, max_length=200),
 
 
 @router.get("/stats")
-async def vault_stats() -> dict:
-    await scan()
+async def vault_stats(account_id: str = Depends(_account_id_dep)) -> dict:
+    await scan(account_id=account_id)
     with _LOCK:
         db = _db()
         nodes, chars = db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(chars),0) FROM nodes").fetchone()
-        chunks = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        edges = db.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+            "SELECT COUNT(*), COALESCE(SUM(chars),0) FROM nodes WHERE owner_account_id=?", (account_id,)).fetchone()
+        chunks = db.execute("SELECT COUNT(*) FROM chunks WHERE owner_account_id=?", (account_id,)).fetchone()[0]
+        edges = db.execute("SELECT COUNT(*) FROM edges WHERE owner_account_id=?", (account_id,)).fetchone()[0]
         domains = len({json.loads(r[0])[0] for r in
-                       db.execute("SELECT domain FROM nodes").fetchall()
+                       db.execute("SELECT domain FROM nodes WHERE owner_account_id=?",
+                                  (account_id,)).fetchall()
                        if json.loads(r[0])})
     return {"nodes": nodes, "chunks": chunks, "edges": edges,
             "domains": domains, "chars": chars,
-            "dir": str(VAULT_DIR)}
+            "dir": str(vault_dir(account_id))}
 
 
-async def backfill_embeddings(batch: int = 128) -> dict:
+async def backfill_embeddings(batch: int = 128, *, account_id: str) -> dict:
     """Give a vector to every chunk that lacks a usable one.
 
     `scan()` cannot do this. It reconciles by mtime, so a note whose file has
@@ -1155,9 +1364,9 @@ async def backfill_embeddings(batch: int = 128) -> dict:
         with _LOCK:
             rows = _db().execute(
                 "SELECT id, text FROM chunks "
-                "WHERE vec IS NULL OR model IS NOT ? OR dim IS NOT ? "
+                "WHERE owner_account_id = ? AND (vec IS NULL OR model IS NOT ? OR dim IS NOT ?) "
                 "LIMIT ?",
-                (model, dim, batch),
+                (account_id, model, dim, batch),
             ).fetchall()
         if not rows:
             break
@@ -1171,8 +1380,9 @@ async def backfill_embeddings(batch: int = 128) -> dict:
             with _LOCK:
                 db = _db()
                 db.executemany(
-                    "UPDATE chunks SET vec=NULL, model=?, dim=? WHERE id=?",
-                    [(model, dim, cid) for cid in empties],
+                    "UPDATE chunks SET vec=NULL, model=?, dim=?"
+                    " WHERE id=? AND owner_account_id=?",
+                    [(model, dim, cid, account_id) for cid in empties],
                 )
                 db.commit()
 
@@ -1186,8 +1396,9 @@ async def backfill_embeddings(batch: int = 128) -> dict:
             with _LOCK:
                 db = _db()
                 db.executemany(
-                    "UPDATE chunks SET vec=?, model=?, dim=? WHERE id=?",
-                    [(v.astype(np.float32).tobytes(), model, dim, cid)
+                    "UPDATE chunks SET vec=?, model=?, dim=?"
+                    " WHERE id=? AND owner_account_id=?",
+                    [(v.astype(np.float32).tobytes(), model, dim, cid, account_id)
                      for (cid, _), v in zip(keep, vecs)],
                 )
                 db.commit()
@@ -1202,23 +1413,23 @@ async def backfill_embeddings(batch: int = 128) -> dict:
 
 
 @router.post("/reindex")
-async def vault_reindex() -> dict:
+async def vault_reindex(account_id: str = Depends(_account_id_dep)) -> dict:
     """Reconcile files against the index, then fill in any missing vectors.
 
     Both halves are needed. scan() alone leaves every pre-existing chunk without
     a vector forever, because it only revisits files whose mtime changed.
     """
-    out = await scan(force=True)
+    out = await scan(force=True, account_id=account_id)
     from .providers.embeddings import is_configured
     if is_configured():
-        out["backfill"] = await backfill_embeddings()
+        out["backfill"] = await backfill_embeddings(account_id=account_id)
     else:
         out["backfill"] = {"skipped": "no embedding provider configured"}
     return out
 
 
 @router.get("/embeddings/status")
-async def vault_embeddings_status() -> dict:
+async def vault_embeddings_status(account_id: str = Depends(_account_id_dep)) -> dict:
     """How much of the corpus is actually searchable by vector.
 
     "Embeddings are on" and "the corpus is embedded" are different facts, and
@@ -1227,10 +1438,12 @@ async def vault_embeddings_status() -> dict:
     from .providers.embeddings import active_dim, active_model, status
     model, dim = active_model(), active_dim()
     with _LOCK:
-        total = _db().execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+        total = _db().execute("SELECT COUNT(*) FROM chunks WHERE owner_account_id=?",
+                              (account_id,)).fetchone()[0]
         usable = _db().execute(
-            "SELECT COUNT(*) FROM chunks WHERE vec IS NOT NULL AND model IS ? AND dim IS ?",
-            (model, dim),
+            "SELECT COUNT(*) FROM chunks WHERE owner_account_id=? AND vec IS NOT NULL"
+            " AND model IS ? AND dim IS ?",
+            (account_id, model, dim),
         ).fetchone()[0]
     return {
         "provider": status(),

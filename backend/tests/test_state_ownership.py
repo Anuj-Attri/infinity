@@ -49,23 +49,12 @@ _OWNER_PARAMS = {"account", "account_id"}
 # Grouped by what each one would leak once a second account exists.
 # ---------------------------------------------------------------------------
 UNOWNED: set[str] = {
-    # --- The vault. A second tenant's search would return the first's notes,
-    # and their graph would show the first's structure. -------------------
-    "app/vault.py:_index_file",
-    "app/vault.py:scan",
-    "app/vault.py:_domain_tree",
-    "app/vault.py:_slug_taken",
-    "app/vault.py:_vec_matrix",
-    "app/vault.py:_node_meta",
-    "app/vault.py:_vector_search",
-    "app/vault.py:_keyword_search",
-    "app/vault.py:retrieve",
-    "app/vault.py:vault_tree",
-    "app/vault.py:vault_graph",
-    "app/vault.py:vault_node",
-    "app/vault.py:vault_stats",
-    "app/vault.py:backfill_embeddings",
-    "app/vault.py:vault_embeddings_status",
+    # --- The vault: MIGRATED 2026-08-23. nodes/chunks/edges/fts all carry
+    # owner_account_id, notes live in a per-account directory (a shared one
+    # would mean two accounts writing the same relative path write the same
+    # FILE, which no column can prevent), and slugs are UNIQUE(owner, slug)
+    # rather than globally unique. [[wikilinks]] resolve inside the owner's
+    # namespace only.
 
     # --- Memory, documents and transcript: MIGRATED 2026-08-22. Every table
     # carries owner_account_id + org_id, every read filters on it, and every
@@ -96,6 +85,14 @@ DELIBERATELY_GLOBAL: dict[str, str] = {
         "stuck in 'running' forever is worse than a sweep that spans them. It "
         "moves no data between accounts — it only closes out what was already "
         "each owner's.",
+    "app/vault.py:_db":
+        "Schema creation, and the connection every other function borrows. "
+        "About the tables rather than any row in them.",
+    "app/vault.py:_migrate_ownership":
+        "The migration that ADDS the owner columns and rebuilds nodes with "
+        "composite uniques. It necessarily spans accounts because it is what "
+        "creates the concept — and it is where existing rows are backfilled to "
+        "the single tenant.",
     "reactor/memory/store.py:__init__":
         "Schema creation and the migration that adds the owner columns. About "
         "the tables rather than any row in them, so it necessarily spans "
@@ -146,6 +143,78 @@ def _scan() -> set[str]:
                 if _touches_state(n) and not _names_an_owner(n):
                     found.add(f"{rel}:{n.name}")
     return found
+
+
+# ---------------------------------------------------------------------------
+# Tables whose every row belongs to exactly one account. A query against one of
+# these without an owner predicate reads or writes across tenants.
+# ---------------------------------------------------------------------------
+OWNED_TABLES = ("nodes", "chunks", "edges", "fts", "memories", "doc_chunks",
+                "turns", "missions", "entitlements")
+
+# Functions whose whole job is the schema, so they legitimately span accounts.
+_SCHEMA_FNS = {"_db", "_migrate_ownership", "__init__", "recover_interrupted",
+               "all_switched_off", "_write"}
+
+
+def _queries_without_an_owner_predicate() -> list[str]:
+    """SQL against an owned table that never mentions owner_account_id.
+
+    THE GAP THIS CLOSES. The ratchet above checks that a function NAMES an
+    owner. It does not check that the owner reaches the WHERE clause — and when
+    the vault was migrated, 31 queries had a correct signature and no predicate.
+    Every ownership test passed. A signature is a promise; only the predicate
+    keeps it, and a test that checks the promise instead of the behaviour is the
+    "test that cannot fail" this codebase keeps warning about.
+    """
+    out: list[str] = []
+    for root in ROOTS:
+        for f in sorted(root.rglob("*.py")):
+            if "__pycache__" in f.parts:
+                continue
+            try:
+                tree = ast.parse(f.read_text(encoding="utf-8", errors="replace"))
+            except SyntaxError:
+                continue
+            rel = f.relative_to(BACKEND).as_posix()
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if fn.name in _SCHEMA_FNS:
+                    continue
+                for node in ast.walk(fn):
+                    if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                        continue
+                    sql = node.value.upper()
+                    if not any(v in sql for v in ("SELECT ", "DELETE ", "UPDATE ")):
+                        continue
+                    if not any(f"FROM {t.upper()}" in sql or f"UPDATE {t.upper()}" in sql
+                               for t in OWNED_TABLES):
+                        continue
+                    if "OWNER_ACCOUNT_ID" in sql or "ACCOUNT_ID" in sql:
+                        continue
+                    out.append(f"{rel}:{fn.name}: {node.value.strip()[:70]}")
+    return out
+
+
+# Queries that read an owned table with no predicate, and are still correct.
+PREDICATE_EXEMPT: dict[str, str] = {}
+
+
+def test_every_query_on_an_owned_table_filters_by_owner():
+    """The predicate, not just the parameter.
+
+    This is the check that would have caught the vault migration shipping with
+    correct signatures and no WHERE clauses.
+    """
+    offenders = [q for q in _queries_without_an_owner_predicate()
+                 if q.split(":", 2)[0] + ":" + q.split(":", 2)[1] not in PREDICATE_EXEMPT]
+    assert not offenders, (
+        "SQL against an owned table with no owner predicate:\n  "
+        + "\n  ".join(offenders)
+        + "\n\nNaming an account in the signature is a promise; the WHERE "
+          "clause is what keeps it."
+    )
 
 
 def test_no_new_unowned_state_function_is_added():

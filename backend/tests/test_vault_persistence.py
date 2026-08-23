@@ -23,12 +23,15 @@ Defence 2 matters even though defence 1 fixes today's bug: the next wrong path
 is not required to announce itself.
 """
 
+
 from __future__ import annotations
 
 import asyncio
 import importlib
 
 import pytest
+
+ACCT = "00000000-0000-0000-0000-00000000000f"   # SINGLE_TENANT
 
 
 @pytest.fixture
@@ -43,12 +46,13 @@ def vault(monkeypatch, tmp_path):
 
 
 def write_note(v, name: str, body: str) -> None:
-    p = v.VAULT_DIR / name
+    p = v.vault_dir(ACCT) / name
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(f"# {name}\n\n{body}\n", encoding="utf-8")
 
 
 def scan(v, **kw):
+    kw.setdefault("account_id", ACCT)
     return asyncio.run(v.scan(**kw))
 
 
@@ -58,9 +62,11 @@ def count_nodes(v) -> int:
 
 def test_notes_live_under_the_data_dir_not_the_repo(vault, tmp_path):
     """The whole bug in one assertion."""
-    assert vault.VAULT_DIR == tmp_path / "vault", (
-        "VAULT_DIR must come from data_path(). Computing it from the repo root "
-        "puts notes on the container's own disk while the index is on the volume."
+    assert vault.vault_dir(ACCT) == tmp_path / "vault" / ACCT, (
+        "the vault must come from data_path() AND be per-account. Computing it "
+        "from the repo root puts notes on the container's own disk while the "
+        "index is on the volume; sharing one directory means two accounts "
+        "writing the same relative path write the same file."
     )
     # And the index must be on that same disk, or they can still diverge.
     assert vault._DB_PATH.parent == tmp_path
@@ -74,7 +80,7 @@ def test_an_explicit_VAULT_DIR_still_wins(monkeypatch, tmp_path):
     import app.paths, app.vault
     importlib.reload(app.paths)
     v = importlib.reload(app.vault)
-    assert v.VAULT_DIR == elsewhere
+    assert v.vault_dir(ACCT) == elsewhere / ACCT
 
 
 def test_a_real_deletion_is_still_reconciled(vault):
@@ -84,7 +90,7 @@ def test_a_real_deletion_is_still_reconciled(vault):
     assert scan(vault, force=True)["indexed"] == 2
     assert count_nodes(vault) == 2
 
-    (vault.VAULT_DIR / "one.md").unlink()
+    (vault.vault_dir(ACCT) / "one.md").unlink()
     out = scan(vault, force=True)
     assert out["removed"] == 1, "deleting one note of two must still reconcile"
     assert count_nodes(vault) == 1
@@ -98,7 +104,7 @@ def test_an_empty_directory_does_not_wipe_the_index(vault, capsys):
 
     # Exactly what a redeploy onto a wrong/unmounted path looks like: the index
     # is intact and the directory is gone.
-    for p in vault.VAULT_DIR.rglob("*.md"):
+    for p in vault.vault_dir(ACCT).rglob("*.md"):
         p.unlink()
 
     out = scan(vault, force=True)
@@ -112,7 +118,7 @@ def test_the_chunk_text_survives_an_empty_scan(vault):
     """chunks.text is the last copy of the body once the file is gone."""
     write_note(vault, "precious.md", "the only copy of this sentence")
     scan(vault, force=True)
-    (vault.VAULT_DIR / "precious.md").unlink()
+    (vault.vault_dir(ACCT) / "precious.md").unlink()
 
     scan(vault, force=True)
     rows = vault._db().execute("SELECT text FROM chunks").fetchall()
@@ -126,7 +132,7 @@ def test_recovery_clears_the_protection(vault):
     write_note(vault, "a.md", "one")
     write_note(vault, "b.md", "two")
     scan(vault, force=True)
-    for p in vault.VAULT_DIR.rglob("*.md"):
+    for p in vault.vault_dir(ACCT).rglob("*.md"):
         p.unlink()
     assert scan(vault, force=True)["removed"] == 0      # protected
 
