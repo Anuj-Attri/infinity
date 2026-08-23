@@ -176,11 +176,23 @@ jobs:
           [ "$code" = "404" ] \
             || { echo "FAIL: door open — /auth/status returned $code with no token."
                  exit 1; }
+          # "/" sends a person to the door rather than returning a bare JSON
+          # 404 they cannot act on. The property that matters is unchanged, and
+          # it is what is asserted here: a stranger must NOT get the app.
           root_code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/)
-          [ "$root_code" = "404" ] \
-            || { echo "FAIL: the SPA is served to anyone — / returned $root_code."
+          [ "$root_code" = "307" ] \
+            || { echo "FAIL: / returned $root_code; expected a redirect to the door."
                  exit 1; }
-          echo "OK: locked. Nothing but /health answers without the token."
+          root_body=$(curl -s http://127.0.0.1:8000/)
+          case "$root_body" in
+            *'<div id="root">'*)
+              echo "FAIL: the SPA is served to anyone — / returned the app itself."
+              exit 1 ;;
+          esac
+          # And the door it lands on must be an entry screen, not a dead end.
+          curl -s http://127.0.0.1:8000/access | grep -q 'id="k"' \
+            || { echo "FAIL: /access is not a usable entry screen."; exit 1; }
+          echo "OK: locked. The app needs the key; only the door is reachable."
 
           # Skills content must survive .dockerignore. Indexing 0 in the
           # container while working locally is a silent, per-turn quality loss.
