@@ -107,10 +107,11 @@ def test_the_key_opens_the_door(locked, how):
 
 def test_the_query_param_sets_a_cookie_and_disappears(locked):
     """Legacy one-click. Prefer /access# for waitlist — query strings are logged."""
-    r = locked().get("/auth/status?k=" + TOKEN)
+    from app.gatekeeper import QUERY
+    r = locked().get(f"/auth/status?{QUERY}=" + TOKEN)
     assert r.status_code == 307
     loc = r.headers["location"]
-    assert "k=" not in loc, f"the token survived in the redirect URL: {loc}"
+    assert TOKEN not in loc, f"the token survived in the redirect URL: {loc}"
 
     cookie = r.headers["set-cookie"]
     assert "HttpOnly" in cookie, "an XSS could read the door key"
@@ -227,3 +228,70 @@ def test_unset_serves_NOTHING_to_a_remote_caller(unlocked, remote_client):
         )
     # The healthcheck must still work, or the deploy never goes live.
     assert c.get("/health").status_code == 200
+
+
+def test_the_door_parameter_cannot_collide_with_a_route_parameter(locked):
+    """It was called "k", and /vault/search?q=...&k=3 passes a RESULT COUNT.
+
+    The door read that 3 as a wrong token, answered 404, and burned the lockout
+    budget — a working request refused by a name clash. A door parameter shares
+    a namespace with every route's parameters, so it must be named like it
+    knows that.
+    """
+    from app.gatekeeper import QUERY
+    assert QUERY not in {"k", "q", "id", "key", "token", "limit", "page"}, (
+        f"the door's query parameter is {QUERY!r}, which a real route could use"
+    )
+    assert QUERY.startswith("__"), "give it a prefix no route parameter would take"
+
+
+def test_a_valid_cookie_survives_an_unrelated_query_parameter(locked):
+    """The bug, end to end.
+
+    _presented() used to return the FIRST credential it found and stop, so a
+    stray query parameter masked a perfectly good cookie and the request was
+    refused without the cookie ever being looked at.
+    """
+    c = locked()
+    c.cookies.set("infinity_access", TOKEN)
+    r = c.get("/auth/status?k=3&q=anything")
+    assert r.status_code == 200, (
+        f"a request with a valid cookie was refused because of an unrelated "
+        f"query parameter (got {r.status_code})"
+    )
+
+
+def test_one_wrong_credential_does_not_mask_a_right_one(locked):
+    """Directly tests the any-match rule, independent of the parameter's name.
+
+    A stale bookmark carrying an OLD door key, plus a current valid cookie, is
+    the realistic version of this: the holder has a working credential and one
+    that has been rotated out. First-credential-wins refuses them on the stale
+    one and never looks at the good one. Accepting is not a weakening — every
+    candidate is still compared in full, in constant time, against the same
+    secret.
+    """
+    from app.gatekeeper import QUERY
+    c = locked()
+    c.cookies.set("infinity_access", TOKEN)
+    r = c.get(f"/auth/status?{QUERY}=an-old-rotated-key", follow_redirects=False)
+    # 307 is the correct answer here, not 200: any request carrying the door
+    # parameter is redirected to a clean URL so the key stops appearing in the
+    # address bar, in history, and in the Referer of every outbound link. What
+    # matters is that it was NOT refused.
+    assert r.status_code != 404, (
+        "a stale key in the query string masked a valid cookie — the request "
+        "was refused without the cookie ever being checked"
+    )
+    assert r.status_code == 307
+    assert "an-old-rotated-key" not in r.headers["location"]
+
+
+def test_all_wrong_credentials_are_still_refused(locked):
+    """The any-match rule must not become an any-credential rule."""
+    from app.gatekeeper import QUERY
+    c = locked()
+    c.cookies.set("infinity_access", "also-wrong")
+    r = c.get(f"/auth/status?{QUERY}=wrong-too",
+              headers={"X-Access-Token": "wrong-as-well"})
+    assert r.status_code == 404, "three wrong keys opened the door"

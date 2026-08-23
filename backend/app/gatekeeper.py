@@ -48,7 +48,12 @@ from . import ratelimit
 
 COOKIE = "infinity_access"
 HEADER = "x-access-token"
-QUERY = "k"
+# NOT "k". It was, and it collided with any route that legitimately takes a
+# query parameter called k — /vault/search?q=...&k=3 passes a RESULT COUNT, the
+# door read it as a wrong token, returned 404, and burned the lockout budget.
+# A door parameter shares a namespace with every route's parameters, so it has
+# to be named like it knows that.
+QUERY = "__infinity_access"
 
 # Railway's healthcheck has no way to present a token, and a deployment whose
 # healthcheck 404s is a deployment that never goes live. It returns no user data.
@@ -139,17 +144,23 @@ def _set_door_cookie(resp, request: Request, value: str) -> None:
     )
 
 
-def _presented(request: Request) -> str | None:
-    q = request.query_params.get(QUERY)
-    if q:
-        return q.strip()
-    h = request.headers.get(HEADER)
-    if h:
-        return h.strip()
-    c = request.cookies.get(COOKIE)
-    if c:
-        return c.strip()
-    return None
+def _presented(request: Request) -> list[str]:
+    """Every credential the request carries, in preference order.
+
+    It used to return the FIRST one present and stop. That made one malformed
+    channel mask a perfectly good one: a browser with a valid door cookie that
+    also happened to send a query parameter got refused on the parameter and
+    never had its cookie looked at. A caller offering several keys should get in
+    if ANY of them is right — that is not a weakening, because each is still
+    compared in full against the same secret.
+    """
+    out: list[str] = []
+    for v in (request.query_params.get(QUERY),
+              request.headers.get(HEADER),
+              request.cookies.get(COOKIE)):
+        if v and v.strip():
+            out.append(v.strip())
+    return out
 
 
 def _deny() -> JSONResponse:
@@ -197,7 +208,7 @@ async def middleware(request: Request, call_next):
         return _deny()
 
     supplied = _presented(request)
-    if not supplied or not _matches(supplied, expected):
+    if not supplied or not any(_matches(v, expected) for v in supplied):
         ratelimit.record_door_failure(request)
         return _deny()
 
