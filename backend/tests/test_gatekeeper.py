@@ -56,10 +56,33 @@ def unlocked(monkeypatch, tmp_path):
 # The door
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("path", ["/", "/auth/status", "/auth/login", "/echo/stream", "/vault/stats"])
-def test_everything_is_invisible_without_the_key(locked, path):
+@pytest.mark.parametrize("path", ["/auth/status", "/auth/login", "/echo/stream",
+                                  "/vault/stats", "/admin/diagnostics", "/memory"])
+def test_every_api_path_is_invisible_without_the_key(locked, path):
+    """The surface cannot be enumerated. `/` is deliberately excluded — see below."""
     r = locked().get(path)
     assert r.status_code == 404, f"{path} was reachable without the access token"
+
+
+def test_a_person_landing_on_the_root_is_sent_to_the_door(locked):
+    """The failure that prompted this: the owner opened their own deployment in
+    a browser and got a raw JSON 404 with no way forward.
+
+    404-for-everything is still right for API paths — a stranger probing them
+    learns nothing. Applied to "/" it produced a locked door with no handle. The
+    redirect discloses exactly one thing, that a gated app lives here, which is
+    already implied for anyone holding the URL; the key is still required for
+    every byte behind it.
+    """
+    r = locked().get("/")
+    assert r.status_code == 307
+    assert r.headers["location"] == "/access"
+
+
+def test_the_root_redirect_does_not_extend_to_writes(locked):
+    """Only a GET of "/" is a person landing. A POST is a client, and a client
+    that has lost its key should see the same nothing as a stranger."""
+    assert locked().post("/", json={}).status_code == 404
 
 
 def test_it_is_a_404_not_a_403(locked):
@@ -295,3 +318,53 @@ def test_all_wrong_credentials_are_still_refused(locked):
     r = c.get(f"/auth/status?{QUERY}=wrong-too",
               headers={"X-Access-Token": "wrong-as-well"})
     assert r.status_code == 404, "three wrong keys opened the door"
+
+
+# ── the door needs a handle ───────────────────────────────────────────────────
+
+def test_access_without_a_fragment_is_a_usable_entry_screen(locked):
+    """It used to render the literal text "Not Found".
+
+    Combined with `/` returning a bare JSON 404, the only way into a deployed
+    instance was to hand-assemble a URL from a secret in a gitignored file. The
+    owner opened their own app and got {"detail":"Not Found"} — a locked door
+    with no handle, which is not a gate, it is a deliberate outage.
+    """
+    body = locked().get("/access").text
+    assert "Not Found" not in body, "the entry screen is still a dead end"
+    assert 'id="k"' in body, "no field to type a key into"
+    assert "<form" in body, "no way to submit it"
+
+
+def test_the_entry_screen_gives_nothing_away(locked):
+    """Someone who guesses this path should learn only that a gated app exists.
+
+    No version, no route names, no hint about what is inside — and above all
+    never the key itself, which the page must ask for rather than confirm.
+    """
+    body = locked().get("/access").text
+    assert TOKEN not in body, "the entry screen leaked the access key"
+    for tell in ("openrouter", "railway", "sqlite", "traceback", "/vault", "/admin"):
+        assert tell not in body.lower(), f"the entry screen mentions {tell!r}"
+
+
+def test_an_invite_link_still_signs_you_in_without_typing(locked):
+    """The fragment path is what gets emailed, and it must keep working."""
+    body = locked().get("/access").text
+    assert "location.hash" in body, "the invite-link path was dropped"
+    assert "history.replaceState" in body, (
+        "the key is not stripped from the address bar, so it lingers in history "
+        "and leaks through the Referer of every outbound link"
+    )
+
+
+def test_the_entry_screen_is_self_contained(locked):
+    """A strict-CSP page with no third-party anything.
+
+    An external font or script on the door would hand a third party the
+    referrer of every private-beta visit, and would break the page entirely if
+    that host were blocked.
+    """
+    body = locked().get("/access").text
+    assert "http://" not in body.replace("http://www.w3.org", "")
+    assert "https://" not in body.replace("https://www.w3.org", "")

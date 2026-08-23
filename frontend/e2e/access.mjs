@@ -29,14 +29,25 @@ const ok = (label, cond, extra = "") => {
 
 const browser = await chromium.launch();
 
-// ---- a stranger sees nothing ------------------------------------------------
-// No header, no cookie, no link. This must be indistinguishable from a URL with
-// nothing behind it.
+// ---- a stranger sees nothing, and a person sees the door --------------------
+// No header, no cookie, no link. Every API path must be indistinguishable from a
+// URL with nothing behind it, so the surface cannot be enumerated.
 const strangerCtx = await browser.newContext();
 const stranger = await strangerCtx.newPage();
-for (const path of ["/", "/auth/status", "/admin/diagnostics"]) {
+for (const path of ["/auth/status", "/admin/diagnostics", "/vault/stats"]) {
   const r = await stranger.goto(APP + path, { waitUntil: "domcontentloaded", timeout: 45000 });
   ok(`a stranger gets 404 at ${path}`, r?.status() === 404, `status=${r?.status()}`);
+}
+
+// "/" is the exception, and deliberately so: it is where a PERSON lands, and
+// serving them a raw JSON 404 made the deployment unopenable by its own owner.
+{
+  const r = await stranger.goto(APP + "/", { waitUntil: "networkidle", timeout: 45000 });
+  ok("the root lands on the door, not a JSON 404", r?.status() === 200 && new URL(stranger.url()).pathname === "/access",
+     `status=${r?.status()} path=${new URL(stranger.url()).pathname}`);
+  const body = await stranger.content();
+  ok("the door has somewhere to type a key", body.includes('id="k"'));
+  ok("the door does not leak the key", !body.includes(TOKEN));
 }
 
 // ---- the waitlist link ------------------------------------------------------
@@ -73,7 +84,12 @@ await bad.waitForTimeout(2000);
 ok("a wrong key sets no cookie",
    !(await badCtx.cookies()).find((c) => c.name === "infinity_access"));
 const badBody = (await bad.evaluate(() => document.body.innerText)).trim();
-ok("a wrong key says Not Found", /not found/i.test(badBody), JSON.stringify(badBody.slice(0, 40)));
+// It used to say the literal words "Not Found", which is what a dead end looks
+// like. A wrong key now lands on the door with a message you can act on — the
+// key is still refused, but the person is not stranded.
+ok("a wrong key is refused with something actionable",
+   /not accepted|try again/i.test(badBody), JSON.stringify(badBody.slice(-60)));
+ok("a wrong key still leaves you outside", !badBody.includes("Ready when you are"));
 
 await browser.close();
 console.log(failures ? `\n${failures} FAILED` : "\naccess door: all checks passed");
