@@ -2494,7 +2494,18 @@ async def narrator_observe(body: NarratorIn) -> dict:
 _PERMISSIONS_PATH = data_path("nova_permissions.json")
 
 
-def _load_permissions() -> dict[str, str]:
+# A GRANT BELONGS TO WHOEVER GAVE IT.
+#
+# This file was one flat {tool: level} map for the whole deployment, so one
+# account clicking "always allow" would have authorised every other account's
+# turns — the consent gate answering on behalf of someone who never consented,
+# and doing it silently, because an auto-approved call looks exactly like an
+# approved one. On disk it is now {account_id: {tool: level}}.
+#
+# The old flat shape is migrated to the single tenant on first read. Honest only
+# while there is one; later it would be a guess about who clicked.
+
+def _read_permission_file() -> dict:
     if not _PERMISSIONS_PATH.exists():
         return {}
     try:
@@ -2503,16 +2514,38 @@ def _load_permissions() -> dict[str, str]:
         return {}
 
 
-def _save_permissions(d: dict[str, str]) -> None:
+def _load_permissions(*, account_id: str) -> dict[str, str]:
+    raw = _read_permission_file()
+    if raw and all(isinstance(v, str) for v in raw.values()):
+        # Pre-ownership flat map. Fold it under the single tenant, once.
+        from .accounts import SINGLE_TENANT
+        raw = {SINGLE_TENANT.id: raw}
+        _write_permission_file(raw)
+        print(f"[perms] migrated {len(raw[SINGLE_TENANT.id])} pre-ownership "
+              f"grant(s) to the single tenant", flush=True)
+    got = raw.get(account_id) or {}
+    return got if isinstance(got, dict) else {}
+
+
+def _write_permission_file(raw: dict) -> None:
     _PERMISSIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = _PERMISSIONS_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(d, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(raw, indent=2), encoding="utf-8")
     os.replace(tmp, _PERMISSIONS_PATH)
+
+
+def _save_permissions(d: dict[str, str], *, account_id: str) -> None:
+    raw = _read_permission_file()
+    if raw and all(isinstance(v, str) for v in raw.values()):
+        from .accounts import SINGLE_TENANT
+        raw = {SINGLE_TENANT.id: raw}
+    raw[account_id] = d
+    _write_permission_file(raw)
 
 
 @app.get("/nova/permissions")
 def nova_permissions_get() -> dict:
-    return {"permissions": _load_permissions()}
+    return {"permissions": _load_permissions(account_id=_account_id())}
 
 
 class PermissionPatch(BaseModel):
@@ -2522,22 +2555,24 @@ class PermissionPatch(BaseModel):
 
 @app.post("/nova/permissions")
 def nova_permissions_set(body: PermissionPatch) -> dict:
-    d = _load_permissions()
+    account_id = _account_id()
+    d = _load_permissions(account_id=account_id)
     if body.level == "revoke":
         d.pop(body.tool, None)
     elif body.level in ("always",):
         d[body.tool] = body.level
     else:
         raise HTTPException(status_code=400, detail="level must be 'always' or 'revoke'")
-    _save_permissions(d)
+    _save_permissions(d, account_id=account_id)
     return {"ok": True, "permissions": d}
 
 
 @app.delete("/nova/permissions/{tool}")
 def nova_permissions_delete(tool: str) -> dict:
-    d = _load_permissions()
+    account_id = _account_id()
+    d = _load_permissions(account_id=account_id)
     d.pop(tool, None)
-    _save_permissions(d)
+    _save_permissions(d, account_id=account_id)
     return {"ok": True, "permissions": d}
 
 

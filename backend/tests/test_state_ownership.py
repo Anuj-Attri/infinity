@@ -312,10 +312,6 @@ def test_the_global_list_does_not_rot_either():
 # shrink it, and delete the line when you do.
 # ---------------------------------------------------------------------------
 FILE_STATE_UNOWNED: dict[str, str] = {
-    "app/main.py:_PERMISSIONS_PATH":
-        "nova_permissions.json — which tools the model has been granted. One "
-        "account's approvals would authorise another's turns, which is the "
-        "consent gate quietly answering for someone who never consented.",
     "app/notify.py:_DATA":
         "notify_queue.json / notify_settings.json — one queue for everyone, so "
         "accounts receive each other's notifications, including job titles and "
@@ -338,6 +334,10 @@ FILE_STATE_UNOWNED: dict[str, str] = {
 
 # File-backed state that is correctly shared.
 FILE_STATE_GLOBAL: dict[str, str] = {
+    "app/main.py:_PERMISSIONS_PATH":
+        "nova_permissions.json — MIGRATED 2026-08-23 to {account_id: {tool: "
+        "level}}. The FILE is shared; every grant inside it names the account "
+        "that gave it, and an unknown account starts with nothing.",
     "app/paths.py:DATA_DIR":
         "The root every other path is derived from. Per-account by definition "
         "would be circular — it is the thing accounts are stored inside.",
