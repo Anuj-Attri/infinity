@@ -46,7 +46,14 @@ export default function McpConnectors() {
   const trust = async (id: string) => { try { await trustMcp(id, true); await refresh(); } catch { /* ignore */ } };
   const remove = async (id: string) => { try { await disconnectMcp(id); await refresh(); } catch { /* ignore */ } };
   const toggleEnabled = async () => { try { const r = await setMcpEnabled(!enabled); setEnabled(r.enabled); } catch { /* ignore */ } };
-  const killAll = async () => { try { await disconnectAllMcp(); setPreview({}); await refresh(); } catch { /* ignore */ } };
+  // Destructive and previously unconfirmed. It also used to remove Nova's
+  // built-in hands along with the user's servers; the backend keeps those now.
+  const killAll = async () => {
+    const mine = servers.filter((s) => !s.builtin).length;
+    if (!mine) return;
+    if (!window.confirm(`Remove ${mine} connected server${mine === 1 ? "" : "s"}? Nova's built-in tools stay.`)) return;
+    try { await disconnectAllMcp(); setPreview({}); await refresh(); } catch { /* ignore */ }
+  };
   const loadAudit = async () => { try { const a = await getMcpAudit(); setAudit(a.events); setShowAudit(true); } catch { setShowAudit(true); } };
   const pick = (m: McpMarketItem) => { setName(m.name === "Custom server" ? "" : m.name); setUrl(m.url_hint); setAuth(""); setErr(""); };
 
@@ -60,7 +67,9 @@ export default function McpConnectors() {
           <span className="mcp-toggle-dot" /> MCP {enabled ? "on" : "OFF"}
         </button>
         <button type="button" className="mcp-link" onClick={loadAudit}>Activity log</button>
-        {servers.length > 0 && <button type="button" className="mcp-link mcp-danger" onClick={killAll}>Disconnect all</button>}
+        {servers.some((s) => !s.builtin) && (
+          <button type="button" className="mcp-link mcp-danger" onClick={killAll}>Disconnect all</button>
+        )}
       </div>
       {!enabled && <div className="mcp-warn">MCP is off — no tools are exposed to Nova.</div>}
 
@@ -95,7 +104,13 @@ export default function McpConnectors() {
               <span className="mcp-server-name">{s.name}</span>
               <span className={`mcp-badge ${s.trusted ? "ok" : "warn"}`}>{s.trusted ? "trusted" : "untrusted"}</span>
               <span className="mcp-server-meta">{s.trusted ? `${s.exposed} exposed` : `${(preview[s.id] ?? []).length} tools`}{s.has_auth ? " · auth" : ""}</span>
-              <button type="button" className="mcp-x" onClick={() => remove(s.id)}>Remove</button>
+              {/* Nova's own hands are not a connection the user made, and
+                  removing one only breaks the app until the next restart
+                  re-seeds it. The backend refuses too — this just stops
+                  offering a button whose only outcome is damage. */}
+              {s.builtin
+                ? <span className="mcp-server-meta">built in</span>
+                : <button type="button" className="mcp-x" onClick={() => remove(s.id)}>Remove</button>}
             </div>
             <div className="mcp-server-url">{s.url}{s.insecure && <span className="mcp-insecure"> · ⚠ not https</span>}</div>
             <div className="mcp-tools">

@@ -261,6 +261,32 @@ await check("your name saves and survives a reload", async () => {
   return `saved "${NAME}", survived a reload, then cleared`;
 });
 
+// Nova's built-in hands (model switching, panels, /image, /audio, /research,
+// /summarize) were rendered in the same list as a user's servers, with the same
+// Remove button — and removing one only breaks the app until the next restart
+// re-seeds it. The backend refuses now; this is the other half.
+await check("Nova's built-in tools cannot be removed from the UI", async () => {
+  await page.keyboard.press("Escape").catch(() => {});
+  const btn = await page.$(".settings-btn, [aria-label='Settings']");
+  await btn.click();
+  await page.waitForSelector(".settings-tab", { timeout: 8000 });
+  await page.click('.settings-tab:text-is("Connections")');
+  await page.waitForSelector(".mcp-server", { timeout: 8000 });
+
+  const rows = await page.$$eval(".mcp-server", (els) => els.map((el) => ({
+    name: el.querySelector(".mcp-server-name")?.textContent?.trim() || "?",
+    builtin: /built in/i.test(el.querySelector(".mcp-server-head")?.innerText || ""),
+    removable: !!el.querySelector(".mcp-x"),
+  })));
+  await page.keyboard.press("Escape").catch(() => {});
+
+  const builtins = rows.filter((r) => r.builtin);
+  if (!builtins.length) throw new Error(`no built-in server listed at all: ${JSON.stringify(rows)}`);
+  const offered = builtins.filter((r) => r.removable);
+  if (offered.length) throw new Error(`Remove offered on built-in(s): ${offered.map((r) => r.name)}`);
+  return `${builtins.length} built-in, ${rows.length - builtins.length} user server(s)`;
+});
+
 // The product owns the model keys; the user never supplies one. Any screen that
 // presents our upstream as something they connected is a bug the owner called
 // out by name — so assert the app does not say it anywhere a person can read.

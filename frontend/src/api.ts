@@ -900,7 +900,11 @@ export async function getStockSummary(quotes: Quote[]): Promise<{ line: string; 
 // dead weight describing a capability the hosted build does not have.
 
 // ── MCP connectors (connect any Streamable-HTTP MCP server) ──
-export type McpServer = { id: string; name: string; url: string; has_auth: boolean; trusted: boolean; insecure: boolean; tool_count: number; exposed: number; connected_at?: number };
+// `builtin` marks Nova's own hands — how she switches models, opens panels, and
+// runs /image, /audio, /research, /summarize. The backend has always sent this
+// field; the type omitted it, so the UI could not tell them apart from a server
+// the user connected and offered a Remove button on both.
+export type McpServer = { id: string; name: string; url: string; has_auth: boolean; trusted: boolean; insecure: boolean; builtin?: boolean; tool_count: number; exposed: number; connected_at?: number };
 export type McpTool = { server_id?: string; server_name?: string; name: string; description: string; input_schema: unknown };
 export type McpMarketItem = { name: string; category: string; desc: string; url_hint: string; needs_auth: string };
 export type McpAuditEvent = { ts: number; server_id: string; server: string; tool: string; args: unknown; decision: string };

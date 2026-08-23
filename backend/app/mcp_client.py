@@ -483,7 +483,13 @@ def trust(sid: str, trusted: bool = True) -> bool:
 
 
 def disconnect(sid: str) -> bool:
+    """Remove one server. Built-ins refuse: they are Nova's own hands, not a
+    connection the user made, and removing one only breaks the app until the
+    next restart re-seeds it."""
     d = _load()
+    rec = d.get(sid)
+    if isinstance(rec, dict) and rec.get("builtin"):
+        return False
     existed = d.pop(sid, None) is not None
     _save(d)
     _TOOLS_CACHE.pop(sid, None)
@@ -496,10 +502,24 @@ def disconnect(sid: str) -> bool:
 
 
 def disconnect_all() -> int:
-    """Kill switch — forget every server + its tools."""
+    """Forget every server the USER connected, and their tools.
+
+    Built-in hands are kept. They are not connections anyone made — they are
+    how Nova switches models, opens panels, and runs /image, /audio, /research
+    and /summarize. `_save({})` used to take them out too, and since
+    `ensure_builtin_servers()` only runs at startup, one click on "Disconnect
+    all" silently removed Nova's own hands until the next redeploy. Nothing in
+    the UI said so, and nothing brought them back.
+
+    Returns the number of user servers removed, which is what the caller
+    reports — built-ins were never part of that count.
+    """
     d = _load()
-    n = len([k for k in d if not k.startswith("_")])
-    _save({})
+    kept = {k: v for k, v in d.items()
+            if k.startswith("_") or (isinstance(v, dict) and v.get("builtin"))}
+    n = len([k for k in d if not k.startswith("_")]) - \
+        len([k for k in kept if not k.startswith("_")])
+    _save(kept)
     _TOOLS_CACHE.clear()
     return n
 

@@ -26,19 +26,17 @@ router = APIRouter(prefix="/mcp", tags=["mcp"])
 
 # A small curated marketplace — browse + connect (or add a custom URL). These are
 # suggestions only; the mechanism connects ANY Streamable-HTTP MCP server.
+#
+# EVERY url_hint here must be a real, reachable endpoint. Three of these used to
+# be placeholders — `https://<your-search-mcp>/mcp` and friends — presented as
+# one-click suggestions. Clicking one prefilled a URL that cannot resolve, so
+# the connection failed with a network error and the user had no way to tell
+# whether MCP was broken, the server was down, or the entry was never real. A
+# suggestion that cannot work is worse than no suggestion.
 MARKETPLACE: list[dict[str, str]] = [
-    {"name": "Web Search / Research", "category": "research",
-     "desc": "Live web search + page fetch for /research-style grounding.",
-     "url_hint": "https://<your-search-mcp>/mcp", "needs_auth": "true"},
-    {"name": "GitHub (SWE)", "category": "swe",
-     "desc": "Repos, issues, PRs, code search — software-engineering tools.",
+    {"name": "GitHub", "category": "swe",
+     "desc": "Repos, issues, PRs, code search. Needs a GitHub token.",
      "url_hint": "https://api.githubcopilot.com/mcp/", "needs_auth": "true"},
-    {"name": "Code Review (CodeRabbit-style)", "category": "review",
-     "desc": "Diff review + inline suggestions over a connected repo.",
-     "url_hint": "https://<your-review-mcp>/mcp", "needs_auth": "true"},
-    {"name": "Filesystem / Docs", "category": "swe",
-     "desc": "Read/search a scoped docs or filesystem tree.",
-     "url_hint": "https://<your-fs-mcp>/mcp", "needs_auth": "false"},
     {"name": "Custom server", "category": "custom",
      "desc": "Any Streamable-HTTP MCP endpoint — paste its URL.",
      "url_hint": "https://host/mcp", "needs_auth": "false"},
