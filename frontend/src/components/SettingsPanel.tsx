@@ -1,14 +1,16 @@
-// Settings drawer. Real status from /keys/status — never holds raw key
-// values in JS, just the backend's masked previews.
+// Settings drawer.
+//
+// Grouped into tabs (see TABS below). Nothing here reads a raw key value, and
+// nothing here reports on the product's own infrastructure — those are operator
+// diagnostics and live in the Console tile.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  getBackendBase,
-  getKeyStatus, listMemories, createMemory, updateMemory, deleteMemory,
+  listMemories, createMemory, updateMemory, deleteMemory,
   connectChatProvider, disconnectChatProvider,
-  connectDispatchProvider, disconnectDispatchProvider, getDispatchProviderStatus,
-  getAuthDevices, revokeAuthDevice, provisionDevice,
-  type KeyEntry, type MemoryItem, type AuthDevice,
+  getAuthDevices, revokeAuthDevice,
+  getProfile, setProfile,
+  type MemoryItem, type AuthDevice,
 } from "../api";
 import { useAuth } from "../state/AuthContext";
 import { useSettings } from "../state/SettingsContext";
@@ -24,12 +26,33 @@ type Props = {
 };
 
 
+// ── Groups ───────────────────────────────────────────────────────────────────
+//
+// This panel was thirteen sections in one scroll, with three of them called
+// some variant of "Connectors" and two called "API Keys". Finding anything
+// meant reading all of it.
+//
+// The grouping is by WHAT YOU CAME TO DO, not by which subsystem implements it:
+// how the app looks, how Nova behaves, what it is plugged into, and who is
+// signed in. Sections that only a developer would open (raw .env key masks,
+// service status pills) are gone from here — they are diagnostics, and
+// diagnostics belong in the operator Console.
+
+type SettingsTab = "general" | "nova" | "connections" | "account" | "about";
+
+const TABS: Array<{ id: SettingsTab; label: string }> = [
+  { id: "general",     label: "General" },
+  { id: "nova",        label: "Nova" },
+  { id: "connections", label: "Connections" },
+  { id: "account",     label: "Account" },
+  { id: "about",       label: "About" },
+];
+
+
 export default function SettingsPanel({ open, onClose }: Props) {
+  const [tab, setTab] = useState<SettingsTab>("general");
   const { settings, resolvedTheme, setHourFormat, setCustomSystemPrompt, resetCustomSystemPrompt, setTheme, accent, setAccent } = useSettings();
   const { enabled: memoryEnabled, setEnabled: setMemoryEnabled } = useMemorySettings();
-  const [keys, setKeys] = useState<KeyEntry[]>([]);
-  const [keysLoading, setKeysLoading] = useState(true);
-  const [keysError, setKeysError] = useState<string | null>(null);
 
   const [memories, setMemories] = useState<MemoryItem[]>([]);
   const [memError, setMemError] = useState<string | null>(null);
@@ -102,16 +125,10 @@ export default function SettingsPanel({ open, onClose }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    let alive = true;
-    setKeysLoading(true);
-    setKeysError(null);
-    getKeyStatus()
-      .then((r) => { if (alive) setKeys(r.keys); })
-      .catch((e) => { if (alive) setKeysError(String(e?.message ?? e)); })
-      .finally(() => { if (alive) setKeysLoading(false); });
-    // Memory list also refreshes on open.
+    // Settings no longer reads /keys/status: the raw .env masks and service
+    // status pills it fed are operator diagnostics, and the Console tile
+    // already reports every one of them (which key is set, what it enables).
     refreshMemories();
-    return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -126,13 +143,6 @@ export default function SettingsPanel({ open, onClose }: Props) {
 
   if (!open) return null;
 
-  const ai   = keys.filter((k) => k.group === "ai");
-  const data = keys.filter((k) => k.group === "data");
-
-  const presentCount  = (group: KeyEntry[]) => group.filter((k) => k.present).length;
-  const newsPresent   = keys.some((k) => k.name === "NEWS_API_KEY" && k.present);
-  const anyAiPresent  = ai.some((k) => k.present);
-
   return (
     <>
       <div className="settings-overlay" onClick={onClose} />
@@ -146,7 +156,21 @@ export default function SettingsPanel({ open, onClose }: Props) {
           </button>
         </div>
 
+        <nav className="settings-tabs" role="tablist" aria-label="Settings sections">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={tab === t.id}
+              className={`settings-tab ${tab === t.id ? "on" : ""}`}
+              onClick={() => setTab(t.id)}
+            >{t.label}</button>
+          ))}
+        </nav>
+
         <div className="settings-body">
+          {tab === "general" && <>
           <section className="settings-section">
             <div className="settings-section-h">Appearance</div>
             <div className="settings-row">
@@ -204,118 +228,51 @@ export default function SettingsPanel({ open, onClose }: Props) {
               <span className="settings-row-meta">{Intl.DateTimeFormat().resolvedOptions().timeZone}</span>
             </div>
           </section>
+          </>}
+
+          {tab === "account" && <>
+          <section className="settings-section">
+            <div className="settings-section-h">You</div>
+            <ProfileSection open={open} />
+          </section>
 
           <section className="settings-section">
             <div className="settings-section-h">Devices</div>
             <DevicesSection open={open} />
           </section>
+          </>}
 
+          {tab === "connections" && <>
           <section className="settings-section">
-            <div className="settings-section-h">Connectors</div>
-            {/* Premium chat providers — BYOK direct keys. Routed through the
-                chat-provider registry on the backend. OpenRouter / sub-agent
-                dispatch is a separate registry and NOT exposed here. */}
-            <ChatProviderStoreBadge />
-            <ChatProviderRow name="anthropic" label="Anthropic" placeholder="sk-ant-…" />
-            <ChatProviderRow name="openai"    label="OpenAI"    placeholder="sk-…" />
-            <ChatProviderRow name="gemini"    label="Gemini"    placeholder="AIza…" />
-          </section>
-
-          <section className="settings-section">
-            <div className="settings-section-h">Sub-agent infra</div>
-            <div className="settings-stub" style={{ marginBottom: 6 }}>
-              Used by Nova for background tasks (research, web search, summarization).
-              OpenRouter models are <strong>never</strong> shown in the chat selector —
-              they live in a separate registry from your chat providers.
-            </div>
-            <OpenRouterRow />
-            <NarratorRow />
-          </section>
-
-          <section className="settings-section">
-            <div className="settings-section-h">Nova permissions</div>
+            <div className="settings-section-h">MCP servers</div>
             <div className="settings-stub">
-              Tools Nova can use without asking each time.
-              <em> read_tile</em> is always-allowed by default (read-only, no side effects).
-            </div>
-            <NovaPermissionsSection />
-          </section>
-
-          <section className="settings-section">
-            <div className="settings-section-h">Integrations</div>
-            <div className="settings-row">
-              <span>News (newsapi.org)</span>
-              <span className={`pill-status ${newsPresent ? "ok" : "off"}`}>
-                {newsPresent ? "connected" : "missing key"}
-              </span>
-            </div>
-            <div className="settings-row">
-              <span>Stocks (yfinance)</span>
-              <span className="pill-status ok">connected · no key needed</span>
-            </div>
-            <div className="settings-row">
-              <span>Language models</span>
-              <span className="pill-status ok">OpenRouter · cloud</span>
-            </div>
-            <div className="settings-row">
-              <span>Local fallback (CPU)</span>
-              <span className="pill-status ok">on demand</span>
-            </div>
-            <div className="settings-row">
-              <span>AI providers</span>
-              <span className={`pill-status ${anyAiPresent ? "ok" : "off"}`}>
-                {presentCount(ai)} / {ai.length} keys present
-              </span>
-            </div>
-          </section>
-
-          <section className="settings-section">
-            <div className="settings-section-h">Connectors · MCP</div>
-            <div className="settings-stub">
-              Connect MCP servers — research, SWE, code-review, or any custom
-              Streamable-HTTP server. Their tools become callable by Nova.
+              Connect an MCP server and its tools become callable by Nova —
+              research, code review, or anything you host yourself. Nova asks
+              before the first use of each tool.
             </div>
             <McpConnectors />
           </section>
 
           <section className="settings-section">
-            <div className="settings-section-h">API Keys · AI Providers</div>
-            {keysLoading && <div className="settings-stub">Loading…</div>}
-            {keysError && <div className="settings-stub" style={{ color: "#8b1f1f" }}>{keysError}</div>}
-            {!keysLoading && !keysError && ai.map((k) => (
-              <div className="settings-row settings-key-row" key={k.name}>
-                <span className="settings-key-label">{k.label}</span>
-                {k.present ? (
-                  <span className="settings-key-val">{k.masked}</span>
-                ) : (
-                  <span className="pill-status off">missing</span>
-                )}
-              </div>
-            ))}
-            <div className="settings-stub">
-              Keys live in <code>.env</code> only — never in localStorage, never in the bundle.
-              Edit/save via the UI is a later rung.
+            {/* Bring-your-own keys for a DIRECT line to a provider. Optional:
+                models work out of the box without any of this. The dispatch
+                registry that powers sub-agents is ours and is not a user
+                setting, so it is not shown — the user never supplies that key,
+                and a "Connect / Disconnect" control over infrastructure they
+                do not own is a button that can only break things. */}
+            <div className="settings-section-h">Your own provider keys</div>
+            <div className="settings-stub" style={{ marginBottom: 6 }}>
+              Optional. Models already work without this — add a key only to
+              bill a provider directly and unlock their full catalog.
             </div>
+            <ChatProviderStoreBadge />
+            <ChatProviderRow name="anthropic" label="Anthropic" placeholder="sk-ant-…" />
+            <ChatProviderRow name="openai"    label="OpenAI"    placeholder="sk-…" />
+            <ChatProviderRow name="gemini"    label="Gemini"    placeholder="AIza…" />
           </section>
+          </>}
 
-          <section className="settings-section">
-            <div className="settings-section-h">API Keys · Data Providers</div>
-            {!keysLoading && !keysError && data.map((k) => (
-              <div className="settings-row settings-key-row" key={k.name}>
-                <span className="settings-key-label">{k.label}</span>
-                {k.present ? (
-                  <span className="settings-key-val">{k.masked}</span>
-                ) : (
-                  <span className="pill-status off">missing</span>
-                )}
-              </div>
-            ))}
-            <div className="settings-row settings-key-row">
-              <span className="settings-key-label">Stocks (yfinance)</span>
-              <span className="settings-row-meta">no key required</span>
-            </div>
-          </section>
-
+          {tab === "nova" && <>
           <section className="settings-section">
             <div className="settings-section-h">Memory</div>
             <div className="settings-row">
@@ -489,17 +446,34 @@ export default function SettingsPanel({ open, onClose }: Props) {
             </div>
           </section>
 
+          <section className="settings-section">
+            <div className="settings-section-h">Permissions</div>
+            <div className="settings-stub">
+              Tools Nova can use without asking each time.
+              <em> read_tile</em> is always-allowed by default (read-only, no side effects).
+            </div>
+            <NovaPermissionsSection />
+          </section>
+
+          <section className="settings-section">
+            <div className="settings-section-h">Narrator</div>
+            <NarratorRow />
+          </section>
+          </>}
+
+          {tab === "about" && <>
           <section className="settings-section settings-section-about">
-            <div className="settings-section-h">About</div>
+            {/* Deliberately just the identity of the thing. The backend URL and
+                the default model used to sit here: both are plumbing, neither
+                is actionable, and one of them named our upstream provider. */}
             <div className="about-card">
               <div className="about-app">Infinity</div>
               <div className="about-by">by Anuj Attri</div>
               <div className="about-version">v{typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.1.1"}</div>
               <div className="about-copyright">© 2026 Anuj Attri. All rights reserved.</div>
             </div>
-            <div className="settings-row"><span>Backend</span><span className="settings-row-meta">{getBackendBase()}</span></div>
-            <div className="settings-row"><span>Default model</span><span className="settings-row-meta">OpenRouter · cloud</span></div>
           </section>
+          </>}
         </div>
       </aside>
     </>
@@ -708,41 +682,47 @@ function ChatProviderRow({
 }
 
 
-// ── OpenRouter row (dispatch / sub-agent infra) ─────────────────────────────
-// Separate from the chat-provider rows above. The key lives in
-// .data/dispatch_keys.json (DPAPI encrypted) and NEVER feeds into the
-// chat selector.
 
-function OpenRouterRow() {
-  const [connected, setConnected] = useState<boolean | null>(null);
-  const [needsReconnect, setNeedsReconnect] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [key, setKey] = useState("");
+
+// ── Profile ──────────────────────────────────────────────────────────────────
+// The name Nova uses. This was a constant in the backend persona ("when the user is
+// wrong…"), which meant the app addressed everyone as its author. Now it is
+// per-account state, and blank is a valid answer — the persona has a neutral
+// form and uses it rather than inventing a name.
+
+function ProfileSection({ open }: { open: boolean }) {
+  const [name, setName] = useState("");
+  const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  // Set the moment the user touches the field. The fetch below resolves
+  // whenever the network says so, and without this it would overwrite whatever
+  // they had already typed — silently, and looking exactly like a field that
+  // refuses to accept input. Found by the e2e check for this section.
+  const touched = useRef(false);
 
-  const loadStatus = async () => {
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    getProfile()
+      .then((r) => {
+        if (!alive) return;
+        setSaved(r.display_name || "");
+        if (!touched.current) setName(r.display_name || "");
+      })
+      .catch((e) => { if (alive) setErr(e instanceof Error ? e.message : String(e)); });
+    return () => { alive = false; };
+  }, [open]);
+
+  const save = async () => {
+    setBusy(true); setErr(null); setDone(false);
     try {
-      const r = await getDispatchProviderStatus();
-      const or = r.providers["openrouter"];
-      setConnected(!!or?.connected);
-      setNeedsReconnect(!!or?.needs_reconnect);
-    } catch {
-      setConnected(false);
-    }
-  };
-
-  useEffect(() => { void loadStatus(); }, []);
-
-  const onSave = async () => {
-    setErr(null);
-    if (!key.trim()) { setErr("Paste an OpenRouter key first."); return; }
-    setBusy(true);
-    try {
-      await connectDispatchProvider("openrouter", key.trim());
-      setKey("");
-      setEditing(false);
-      await loadStatus();
+      const r = await setProfile(name.trim());
+      setName(r.display_name);
+      setSaved(r.display_name);
+      setDone(true);
+      window.setTimeout(() => setDone(false), 2000);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -750,92 +730,36 @@ function OpenRouterRow() {
     }
   };
 
-  const onDisconnect = async () => {
-    setErr(null);
-    setBusy(true);
-    try {
-      await disconnectDispatchProvider("openrouter");
-      await loadStatus();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const onPasteFromClipboard = async () => {
-    setErr(null);
-    try {
-      const t = await navigator.clipboard.readText();
-      if (t) setKey(t.trim()); else setErr("Clipboard is empty.");
-    } catch {
-      setErr("Clipboard blocked — use Ctrl+V into the field instead.");
-    }
-  };
+  const dirty = name.trim() !== saved;
 
   return (
     <>
-      <div className="settings-row settings-connector-row">
-        <span>OpenRouter <span className="settings-row-meta">(sub-agents only)</span></span>
-        {connected ? (
-          <div className="settings-row-actions">
-            <span className="pill-status ok">Connected</span>
-            <button type="button" className="settings-action-btn"
-              onClick={() => { setErr(null); setEditing((v) => !v); }} disabled={busy}>
-              {editing ? "Cancel" : "Edit"}
-            </button>
-            <button type="button" className="settings-action-btn settings-action-danger"
-              onClick={onDisconnect} disabled={busy}>Disconnect</button>
-          </div>
-        ) : needsReconnect ? (
-          <div className="settings-row-actions">
-            <span className="pill-status off">Reconnect required</span>
-            <button type="button" className="settings-action-btn settings-action-primary"
-              onClick={() => { setErr(null); setEditing((v) => !v); }} disabled={busy}>
-              {editing ? "Cancel" : "Reconnect"}
-            </button>
-          </div>
-        ) : (
-          <div className="settings-row-actions">
-            <span className="pill-status off">Not connected</span>
-            <button type="button" className="settings-action-btn settings-action-primary"
-              onClick={() => { setErr(null); setEditing((v) => !v); }} disabled={busy}>
-              {editing ? "Cancel" : "Connect"}
-            </button>
-          </div>
-        )}
-      </div>
-      {editing && (
-        <div className="connector-card">
-          <div className="connector-stub">
-            Paste your OpenRouter API key. Used exclusively by Nova's sub-agent
-            dispatch — will not appear in the chat selector. Encrypted at rest
-            via Windows DPAPI, same as chat keys.
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <input
-              type="password"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              onPaste={(e) => { const t = e.clipboardData?.getData("text"); if (t) { e.preventDefault(); setKey(t.trim()); } }}
-              placeholder="sk-or-v1-…"
-              autoComplete="off" spellCheck={false} disabled={busy}
-              style={{ flex: 1, padding: "6px 10px", borderRadius: 6,
-                       border: "1px solid var(--border, #d8d8da)",
-                       background: "var(--surface, #fff)", color: "inherit",
-                       fontFamily: "inherit", fontSize: 13 }}
-              onKeyDown={(e) => { if (e.key === "Enter") void onSave(); }}
-            />
-            <button type="button" className="settings-action-btn"
-              onClick={onPasteFromClipboard} disabled={busy}>Paste</button>
-            <button type="button" className="settings-action-btn settings-action-primary"
-              onClick={onSave} disabled={busy || !key.trim()}>
-              {busy ? "Testing…" : "Save & test"}
-            </button>
-          </div>
-          {err && <div className="connector-error" style={{ marginTop: 6 }}>{err}</div>}
+      <div className="settings-row">
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <span>Your name</span>
+          <span className="settings-row-meta" style={{ fontSize: 11 }}>
+            What Nova calls you. Leave blank and it won't use a name.
+          </span>
         </div>
-      )}
+        <div className="settings-row-actions">
+          <input
+            className="settings-input"
+            value={name}
+            maxLength={64}
+            onChange={(e) => { touched.current = true; setName(e.target.value); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && dirty) void save(); }}
+            placeholder="your name"
+            style={{ width: 150 }}
+          />
+          <button
+            type="button"
+            className="settings-action-btn"
+            disabled={busy || !dirty}
+            onClick={() => void save()}
+          >{busy ? "…" : done ? "Saved" : "Save"}</button>
+        </div>
+      </div>
+      {err && <div className="mem-error">{err}</div>}
     </>
   );
 }
@@ -848,10 +772,10 @@ function NarratorRow() {
   return (
     <div className="settings-row" style={{ marginTop: 8 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <span>Enable Narrator (background observer)</span>
+        <span>Background observer</span>
         <span className="settings-row-meta" style={{ fontSize: 11 }}>
-          Watches each reply, feeds a silent hint to Nova's next turn.
-          Requires OpenRouter. Consumes tokens — opt-in only.
+          Watches each reply and feeds a silent hint into Nova's next turn.
+          Costs extra tokens per turn — opt-in.
         </span>
       </div>
       <button
@@ -894,22 +818,6 @@ function DevicesSection({ open }: { open: boolean }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
-  const [provName, setProvName] = useState("Eye of Infinity");
-  const [provToken, setProvToken] = useState<string | null>(null);
-  const [provBusy, setProvBusy] = useState(false);
-
-  const provision = async () => {
-    setProvBusy(true); setErr(null); setProvToken(null);
-    try {
-      const r = await provisionDevice(provName.trim() || "device");
-      setProvToken(r.token);
-      await refresh();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setProvBusy(false);
-    }
-  };
 
   const refresh = async () => {
     setLoading(true);
@@ -974,38 +882,12 @@ function DevicesSection({ open }: { open: boolean }) {
         ))}
       </ul>
 
-      <div className="settings-subsection" style={{ marginTop: 12 }}>
-        <div className="settings-row">
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            <span>Provision a device</span>
-            <span className="settings-row-meta" style={{ fontSize: 11 }}>
-              Mint a token for another device (e.g. the Eye node). Shown once — copy it into the device's config.
-            </span>
-          </div>
-          <div className="settings-row-actions">
-            <input
-              className="settings-input"
-              value={provName}
-              onChange={(e) => setProvName(e.target.value)}
-              placeholder="device name"
-              style={{ width: 140 }}
-            />
-            <button type="button" className="settings-action-btn" disabled={provBusy} onClick={() => void provision()}>
-              {provBusy ? "…" : "Provision"}
-            </button>
-          </div>
-        </div>
-        {provToken && (
-          <div className="settings-row" style={{ marginTop: 6 }}>
-            <code className="mem-text" style={{ fontSize: 11, wordBreak: "break-all", userSelect: "all" }}>{provToken}</code>
-            <button
-              type="button"
-              className="settings-action-btn"
-              onClick={() => { void navigator.clipboard?.writeText(provToken); }}
-            >Copy</button>
-          </div>
-        )}
-      </div>
+      {/* "Provision a device" lived here — it minted a long-lived token to paste
+          into an "Eye node", a Mark 3 concept that has no counterpart in a
+          hosted build. It was also the one control in Settings that could hand
+          out a durable credential, which is not something to leave lying around
+          in a product about to have real accounts. The /auth/issue route stays
+          for now; nothing in the UI calls it. */}
 
       <div className="settings-row" style={{ marginTop: 10 }}>
         <span>Sign out this device</span>

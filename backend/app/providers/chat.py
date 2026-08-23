@@ -520,6 +520,12 @@ OPENROUTER_DATA_POLICY = {"data_collection": "deny"}
 # live catalog so a slug that later disappears silently drops out. Search in the
 # selector still works — it just searches this curated set.
 CURATED_CHAT_MODELS: list[tuple[str, str]] = [
+    # The DEFAULT model must appear here or the selector cannot show what is
+    # actually answering. `anthropic/claude-sonnet-5` was the default and was
+    # missing from this list, so the picker offered a set of models that did
+    # not include the one in use — the current selection had no row.
+    ("anthropic/claude-opus-5",            "Claude Opus 5"),
+    ("anthropic/claude-sonnet-5",          "Claude Sonnet 5"),
     ("anthropic/claude-opus-4.7",          "Claude Opus 4.7"),
     ("anthropic/claude-sonnet-4.5",        "Claude Sonnet 4.5"),
     ("anthropic/claude-haiku-4.5",         "Claude Haiku 4.5"),

@@ -338,6 +338,13 @@ FILE_STATE_GLOBAL: dict[str, str] = {
         "nova_permissions.json — MIGRATED 2026-08-23 to {account_id: {tool: "
         "level}}. The FILE is shared; every grant inside it names the account "
         "that gave it, and an unknown account starts with nothing.",
+    "app/profile.py:_PATH":
+        "account_profile.json — {account_id: {display_name}}, owned from the "
+        "first commit. The FILE is shared; every name inside it is keyed by the "
+        "account that set it, and an account with no entry gets no name rather "
+        "than someone else's. This one is load-bearing: the name goes into the "
+        "system prompt, so a shared value would put one user's identity in "
+        "another user's model context on every turn.",
     "app/paths.py:DATA_DIR":
         "The root every other path is derived from. Per-account by definition "
         "would be circular — it is the thing accounts are stored inside.",

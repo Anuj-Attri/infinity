@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useChatModels } from "../state/ChatModelsContext";
-import { FALLBACK_MODELS, PROVIDER_LABEL, PROVIDER_ORDER } from "../config/models";
+import { FALLBACK_MODELS, orderVendors, vendorLabel, vendorOf } from "../config/models";
 import type { ModelDef } from "../config/models";
 
 // Detect dated variant suffix e.g. "-2026-03-17" → family id without the date
@@ -14,34 +14,41 @@ function familyId(id: string): string {
 }
 
 type FamilyGroup = { famId: string; primary: ModelDef; variants: ModelDef[] };
-type ProviderSection = { provider: string; label: string; families: FamilyGroup[] };
+type VendorSection = { vendor: string; label: string; families: FamilyGroup[] };
 
-function buildSections(available: ModelDef[], q: string): ProviderSection[] {
+// Grouped by who MAKES the model, not by which lane carries it — see
+// `vendorOf` in config/models. The section headings a user reads are
+// "Anthropic" / "OpenAI" / "Google", never the name of our router.
+function buildSections(available: ModelDef[], q: string): VendorSection[] {
   const lq = q.trim().toLowerCase();
   const filtered = lq
     ? available.filter((m) => m.label.toLowerCase().includes(lq) || m.id.toLowerCase().includes(lq))
     : available;
 
-  return PROVIDER_ORDER
-    .map((prov) => {
-      const ms = filtered.filter((m) => m.provider === prov);
-      if (!ms.length) return null;
+  const byVendor = new Map<string, ModelDef[]>();
+  for (const m of filtered) {
+    const v = vendorOf(m);
+    if (!byVendor.has(v)) byVendor.set(v, []);
+    byVendor.get(v)!.push(m);
+  }
 
-      const famMap = new Map<string, ModelDef[]>();
-      for (const m of ms) {
-        const fid = familyId(m.id);
-        if (!famMap.has(fid)) famMap.set(fid, []);
-        famMap.get(fid)!.push(m);
-      }
+  return orderVendors(byVendor.keys()).map((vendor) => {
+    const ms = byVendor.get(vendor)!;
 
-      const families: FamilyGroup[] = [];
-      for (const [fid, models] of famMap) {
-        const primary = models.find((m) => m.id === fid) ?? models[0];
-        families.push({ famId: fid, primary, variants: models.filter((m) => m !== primary) });
-      }
-      return { provider: prov, label: PROVIDER_LABEL[prov] ?? prov, families };
-    })
-    .filter(Boolean) as ProviderSection[];
+    const famMap = new Map<string, ModelDef[]>();
+    for (const m of ms) {
+      const fid = familyId(m.id);
+      if (!famMap.has(fid)) famMap.set(fid, []);
+      famMap.get(fid)!.push(m);
+    }
+
+    const families: FamilyGroup[] = [];
+    for (const [fid, models] of famMap) {
+      const primary = models.find((m) => m.id === fid) ?? models[0];
+      families.push({ famId: fid, primary, variants: models.filter((m) => m !== primary) });
+    }
+    return { vendor, label: vendorLabel(vendor), families };
+  });
 }
 
 type Props = {
@@ -197,7 +204,7 @@ export default function ModelControls({ modelId, setModelId, noThink, setNoThink
               <div className="mc-empty">No models match</div>
             )}
             {sections.map((sec) => (
-              <div key={sec.provider} className="mc-group">
+              <div key={sec.vendor} className="mc-group">
                 <div className="mc-group-label">{sec.label}</div>
                 {sec.families.map((fam) => {
                   const hasVariants = fam.variants.length > 0;

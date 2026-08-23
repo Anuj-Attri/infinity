@@ -183,6 +183,105 @@ await check("settings opens and the theme actually changes", async () => {
   return `theme ${before} -> ${after}`;
 });
 
+// The panel is grouped into tabs. A tab whose content failed to render shows an
+// empty pane — and the check above would still pass, because it only looks for
+// the word "theme" on the default tab. Every tab has to actually contain
+// something, and the one that is easiest to get wrong is the one whose content
+// is a component that fetches (Account → your name, Connections → MCP).
+await check("every settings tab renders content", async () => {
+  await page.keyboard.press("Escape").catch(() => {});
+  const btn = await page.$(".settings-btn, [aria-label='Settings']");
+  if (!btn) throw new Error("no settings button");
+  await btn.click();
+  await page.waitForSelector(".settings-tab", { timeout: 8000 });
+
+  const tabs = await page.$$eval(".settings-tab", (els) => els.map((e) => e.textContent.trim()));
+  if (tabs.length < 2) throw new Error(`only ${tabs.length} tab(s): ${tabs}`);
+
+  const empty = [];
+  for (const label of tabs) {
+    await page.click(`.settings-tab:text-is("${label}")`);
+    await page.waitForTimeout(500);
+    const n = await page.$$eval(".settings-body .settings-section", (els) => els.length);
+    const text = await page.$eval(".settings-body", (el) => el.innerText.trim().length);
+    if (!n || text < 20) empty.push(`${label}(${n} sections, ${text} chars)`);
+  }
+  await page.keyboard.press("Escape").catch(() => {});
+  if (empty.length) throw new Error(`empty tab(s): ${empty.join(", ")}`);
+  return `${tabs.length} tabs: ${tabs.join(" · ")}`;
+});
+
+// The name Nova calls you. It is server state feeding the model's system
+// prompt, so "it saved" means it survives a reload — not that the input
+// accepted keystrokes.
+await check("your name saves and survives a reload", async () => {
+  await page.keyboard.press("Escape").catch(() => {});
+  const btn = await page.$(".settings-btn, [aria-label='Settings']");
+  await btn.click();
+  await page.waitForSelector(".settings-tab", { timeout: 8000 });
+  await page.click('.settings-tab:text-is("Account")');
+  await page.waitForSelector('.settings-input[placeholder="your name"]', { timeout: 8000 });
+
+  // Unique per run. Save is (correctly) disabled when nothing changed, so a
+  // fixed name makes this check pass once and then hang on the second run
+  // against the same data directory — which is exactly how it first failed.
+  const NAME = `E2E ${Date.now().toString().slice(-6)}`;
+  await page.fill('.settings-input[placeholder="your name"]', NAME);
+  await page.click('.settings-row-actions button:text-is("Save")');
+  await page.waitForTimeout(1200);
+
+  // Verified by RELOADING, not by calling /profile from page script: a bare
+  // fetch() carries none of the app's auth and just returns 401, which would
+  // fail this check for a reason that has nothing to do with the feature.
+  // A reload also tests the thing the user actually cares about.
+  const readBack = async () => {
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForTimeout(3500);
+    await ensureCanvas();
+    const b = await page.$(".settings-btn, [aria-label='Settings']");
+    await b.click();
+    await page.waitForSelector(".settings-tab", { timeout: 8000 });
+    await page.click('.settings-tab:text-is("Account")');
+    await page.waitForSelector('.settings-input[placeholder="your name"]', { timeout: 8000 });
+    await page.waitForTimeout(800);   // the field loads from the server
+    return page.$eval('.settings-input[placeholder="your name"]', (el) => el.value);
+  };
+
+  const stored = await readBack();
+  if (stored !== NAME) throw new Error(`after reload the field held ${JSON.stringify(stored)}`);
+
+  // Clearing it is a supported outcome, not an error — the persona has a
+  // neutral form and uses it when no name is set.
+  await page.fill('.settings-input[placeholder="your name"]', "");
+  await page.click('.settings-row-actions button:text-is("Save")');
+  await page.waitForTimeout(1200);
+  const cleared = await readBack();
+  await page.keyboard.press("Escape").catch(() => {});
+  if (cleared !== "") throw new Error(`clearing left ${JSON.stringify(cleared)}`);
+  return `saved "${NAME}", survived a reload, then cleared`;
+});
+
+// The product owns the model keys; the user never supplies one. Any screen that
+// presents our upstream as something they connected is a bug the owner called
+// out by name — so assert the app does not say it anywhere a person can read.
+await check("the UI does not name our upstream provider", async () => {
+  await page.keyboard.press("Escape").catch(() => {});
+  const btn = await page.$(".settings-btn, [aria-label='Settings']");
+  await btn.click();
+  await page.waitForSelector(".settings-tab", { timeout: 8000 });
+  const tabs = await page.$$eval(".settings-tab", (els) => els.map((e) => e.textContent.trim()));
+  const hits = [];
+  for (const label of tabs) {
+    await page.click(`.settings-tab:text-is("${label}")`);
+    await page.waitForTimeout(400);
+    const t = await page.$eval(".settings-body", (el) => el.innerText);
+    if (/openrouter/i.test(t)) hits.push(label);
+  }
+  await page.keyboard.press("Escape").catch(() => {});
+  if (hits.length) throw new Error(`named on tab(s): ${hits.join(", ")}`);
+  return `clean across ${tabs.length} tabs`;
+});
+
 await check("the command palette filters", async () => {
   await page.keyboard.press("Escape").catch(() => {});
   await page.keyboard.press("Control+K");

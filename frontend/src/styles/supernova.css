@@ -3449,6 +3449,37 @@ button { font-family: inherit; color: inherit; }
   transition: all 140ms var(--ease);
 }
 .settings-close:hover { color: var(--ink-0); background: var(--bg-soft); }
+
+/* Group rail. The panel was one long scroll of thirteen sections; these split
+   it by what you came to do. Scrolls horizontally rather than wrapping, so a
+   narrow panel never turns the rail into two stacked rows that push the
+   content down. */
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 10px 22px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.settings-tabs::-webkit-scrollbar { display: none; }
+.settings-tab {
+  appearance: none; border: 0; background: transparent;
+  padding: 7px 11px 9px;
+  white-space: nowrap;
+  font: 500 12px var(--font-ui, inherit);
+  color: var(--ink-3);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 140ms var(--ease), border-color 140ms var(--ease);
+}
+.settings-tab:hover { color: var(--ink-1); }
+.settings-tab.on {
+  color: var(--ink-0);
+  border-bottom-color: var(--accent);
+}
+
 .settings-body {
   flex: 1; min-height: 0;
   overflow-y: auto;

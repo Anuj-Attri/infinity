@@ -82,7 +82,10 @@ def get_tools() -> list[dict[str, Any]]:
                 + ", ".join(workflow_commands())
                 + ". Exactly what the user's typed /commands do — image/audio "
                 "generate media, research does cited web research, summarize "
-                "synthesizes the open tiles. These SPEND (OpenRouter), so they "
+                "synthesizes the open tiles. These COST MONEY to run, so they "
+                # Tool descriptions are rendered in Settings → Connections, so
+                # this string is user-facing. It named our upstream provider,
+                # which is plumbing the user neither chose nor pays directly.
                 "are always approved per-call."
             ),
             "inputSchema": {

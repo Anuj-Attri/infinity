@@ -142,16 +142,34 @@ export async function getAuthDevices(): Promise<{ devices: AuthDevice[] }> {
   return r.json();
 }
 
-/** Provision a token for another device (e.g. the Eye node). The full token is
- * returned ONCE — copy it into that device's config. */
-export async function provisionDevice(device_name: string): Promise<{ token: string; device_name: string }> {
-  const r = await apiFetch(`${BASE}/auth/issue`, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ device_name }),
-  });
-  if (!r.ok) throw new Error(`auth/issue ${r.status}`);
+// ── Account profile ─────────────────────────────────────────────────────────
+// The name Nova calls you. Server-side and per-account — deliberately NOT a
+// localStorage value, because it feeds the model's system prompt and has to be
+// the same on every device you sign in from.
+
+export async function getProfile(): Promise<{ display_name: string }> {
+  const r = await apiFetch(`${BASE}/profile`);
+  if (!r.ok) throw new Error(`profile ${r.status}`);
   return r.json();
 }
+
+export async function setProfile(display_name: string): Promise<{ display_name: string }> {
+  const r = await apiFetch(`${BASE}/profile`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ display_name }),
+  });
+  if (!r.ok) throw new Error(`profile ${r.status}`);
+  return r.json();
+}
+
+// `provisionDevice` (POST /auth/issue) was here: it minted a long-lived bearer
+// token to paste into an "Eye node". The UI that called it is gone, and this
+// was the only client that could mint a durable credential — so it goes too,
+// rather than sitting one import away from being reachable again.
+//
+// The ROUTE stays, and so does issue_token(): /auth/login calls it. This
+// removes the product's ability to hand out credentials, not the app's ability
+// to sign you in.
 
 export async function revokeAuthDevice(id: string): Promise<{ ok: boolean; self_revoked: boolean }> {
   const r = await apiFetch(`${BASE}/auth/devices/${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -733,19 +751,10 @@ export async function ragQuery(question: string, k?: number): Promise<{ chunks: 
   return r.json();
 }
 
-export type KeyEntry = {
-  name: string;
-  label: string;
-  group: "ai" | "data";
-  present: boolean;
-  masked: string | null;
-};
-
-export async function getKeyStatus(): Promise<{ keys: KeyEntry[] }> {
-  const r = await apiFetch(`${BASE}/keys/status`);
-  if (!r.ok) throw new Error(`keys/status ${r.status}`);
-  return r.json();
-}
+// `KeyEntry` / `getKeyStatus` (GET /keys/status) lived here. They returned
+// masked previews of the PRODUCT's own env keys — operator diagnostics, not a
+// user setting, and the Console tile already reports which keys are set and
+// what each one enables.
 
 export type Quote = {
   symbol: string;
@@ -884,77 +893,11 @@ export async function getStockSummary(quotes: Quote[]): Promise<{ line: string; 
   return r.json();
 }
 
-// ── Vision: open-vocab live detection (YOLO-World on REACTOR's GPU) ──
-export type VisionBox = { label: string; confidence: number; box: [number, number, number, number] };
-export type VisionResult = { detections: VisionBox[]; prompt: string[]; ms: number; device: string };
-
-/** POST one JPEG frame + open-vocab prompt → normalized detections. */
-export async function visionDetect(
-  jpeg: Blob, prompt: string, opts?: { imgsz?: number; conf?: number },
-): Promise<VisionResult> {
-  const fd = new FormData();
-  fd.append("frame", jpeg, "frame.jpg");
-  fd.append("prompt", prompt);
-  if (opts?.imgsz) fd.append("imgsz", String(opts.imgsz));
-  if (opts?.conf != null) fd.append("conf", String(opts.conf));
-  const r = await apiFetch(`${BASE}/vision/detect`, { method: "POST", body: fd });
-  if (!r.ok) throw new Error(`vision ${r.status}`);
-  return r.json();
-}
-
-export async function visionStatus(): Promise<{
-  ready: boolean; model: string; device?: string;
-  vram?: { free_mb: number; total_mb: number } | null;
-}> {
-  const r = await apiFetch(`${BASE}/vision/status`);
-  if (!r.ok) throw new Error(`vision status ${r.status}`);
-  return r.json();
-}
-
-// ── The Eye of Infinity (the XIAO remote node) ──
-// The node POSTs frames/audio to the backend; the tile only READS the cached
-// state and sets the mode. Fail-closed: `online:false` => no frame, no boxes.
-export type EyePulse = { bpm: number | null; quality: string; note: string };
-export type EyeState = {
-  online: boolean;
-  mode: string;
-  source: string;
-  age_ms: number | null;
-  stale_s: number;
-  message: string;
-  frame: string | null;             // data URL while online, null when offline
-  frame_ms?: number | null;
-  detections: VisionBox[];
-  infer_ms?: number;
-  device?: string;
-  prompt?: string;
-  text: string;                     // scene/read result
-  pulse: EyePulse;
-  transcript?: string;
-  transcript_age_ms?: number | null;
-};
-export type EyeConfig = { modes: string[]; mode: string; prompt: string; stale_s: number; vlm_model: string };
-
-export async function getEyeState(): Promise<EyeState> {
-  const r = await apiFetch(`${BASE}/vision/eye/state`);
-  if (!r.ok) throw new Error(`eye state ${r.status}`);
-  return r.json();
-}
-export async function getEyeConfig(): Promise<EyeConfig> {
-  const r = await apiFetch(`${BASE}/vision/eye/config`);
-  if (!r.ok) throw new Error(`eye config ${r.status}`);
-  return r.json();
-}
-export async function setEyeMode(
-  mode: string, prompt?: string,
-): Promise<{ ok: boolean; mode: string; prompt: string }> {
-  const r = await apiFetch(`${BASE}/vision/eye/mode`, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify(prompt != null ? { mode, prompt } : { mode }),
-  });
-  if (!r.ok) throw new Error(`eye mode ${r.status}`);
-  return r.json();
-}
+// The Vision and "Eye of Infinity" clients lived here: open-vocab detection
+// plus a remote XIAO camera node. Both are gone. They called /vision/detect,
+// /vision/status and /vision/eye/{state,config,mode} — and this backend mounts
+// no /vision routes at all, so every one of those calls 404'd. They were
+// dead weight describing a capability the hosted build does not have.
 
 // ── MCP connectors (connect any Streamable-HTTP MCP server) ──
 export type McpServer = { id: string; name: string; url: string; has_auth: boolean; trusted: boolean; insecure: boolean; tool_count: number; exposed: number; connected_at?: number };
@@ -1255,57 +1198,12 @@ export async function disconnectChatProvider(
 }
 
 
-// ── Dispatch providers (OpenRouter sub-agent infra) ──────────────────
-// SEPARATE from chat providers — different registry, different endpoints,
-// different storage. OpenRouter NEVER appears in the chat selector.
-
-export type DispatchProviderStatus = Record<string, { connected: boolean; needs_reconnect?: boolean }>;
-
-export type DispatchModelEntry = {
-  id: string;
-  display_name: string;
-  tier: "fast" | "smart" | "other";
-};
-
-export async function getDispatchProviderStatus(): Promise<{
-  providers: DispatchProviderStatus;
-  store: { backend: string; encrypted: boolean };
-}> {
-  const r = await apiFetch(`${BASE}/dispatch-providers/status`);
-  if (!r.ok) throw new Error(`dispatch-providers/status ${r.status}`);
-  return r.json();
-}
-
-export async function getDispatchProviderModels(): Promise<{ items: DispatchModelEntry[] }> {
-  const r = await apiFetch(`${BASE}/dispatch-providers/models`);
-  if (!r.ok) throw new Error(`dispatch-providers/models ${r.status}`);
-  return r.json();
-}
-
-export async function connectDispatchProvider(
-  provider: "openrouter",
-  key: string,
-): Promise<{ ok: true; models: DispatchModelEntry[] }> {
-  const r = await apiFetch(`${BASE}/dispatch-providers/${provider}/connect`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ key }),
-  });
-  if (!r.ok) {
-    let detail = `${provider}/connect ${r.status}`;
-    try { const b = await r.json(); if (b?.detail) detail = String(b.detail); } catch {}
-    throw new Error(detail);
-  }
-  return r.json();
-}
-
-export async function disconnectDispatchProvider(
-  provider: "openrouter",
-): Promise<{ ok: boolean }> {
-  const r = await apiFetch(`${BASE}/dispatch-providers/${provider}`, { method: "DELETE" });
-  if (!r.ok) throw new Error(`disconnect dispatch ${provider} ${r.status}`);
-  return r.json();
-}
+// The dispatch-provider client (status / models / connect / disconnect) lived
+// here, backing a "Connect OpenRouter" control in Settings. The product owns
+// that key — the user never supplies it — so the whole surface was a set of
+// buttons over infrastructure they do not control, one of which could break
+// sub-agents for everyone. The routes remain; nothing in the app can reach
+// them.
 
 export type SubAgentCallbacks = {
   onDelta: (chunk: string) => void;
@@ -1313,12 +1211,22 @@ export type SubAgentCallbacks = {
   onError?: (msg: string) => void;
 };
 
+// These are shown to the USER when a background task fails, so they say what
+// happened and what they can do — nothing about which vendor we buy inference
+// from, and no instruction to go fix a key.
+//
+// They used to name OpenRouter and send the reader to "Settings → Sub-agent
+// infra". That section is gone, and it was never the user's key to fix: the
+// product owns it. An error that sends someone to a screen that does not exist,
+// to repair something they do not control, is worse than one that just says the
+// thing is down.
 function _humanizeDispatchError(raw: string): string {
-  if (raw.includes("429")) return "OpenRouter rate-limited (429) — try again in a moment";
-  if (raw.includes("timeout") || raw.includes("Timeout")) return "OpenRouter timeout — try again";
-  if (raw.includes("401") || raw.includes("403")) return "OpenRouter auth error — check your key in Settings → Sub-agent infra";
-  if (raw.includes("not connected")) return "OpenRouter not connected — go to Settings → Sub-agent infra";
-  if (raw.includes("503") || raw.includes("502")) return "OpenRouter unavailable (503) — try again in a moment";
+  if (raw.includes("429")) return "Rate limited — try again in a moment";
+  if (raw.includes("timeout") || raw.includes("Timeout")) return "That timed out — try again";
+  if (raw.includes("401") || raw.includes("403") || raw.includes("not connected")) {
+    return "Background tasks are unavailable right now. Nothing to fix on your side — try again shortly.";
+  }
+  if (raw.includes("503") || raw.includes("502")) return "Temporarily unavailable — try again in a moment";
   return raw;
 }
 

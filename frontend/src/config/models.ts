@@ -1,11 +1,15 @@
 // Chat model registry — dynamic.
 //
-// Post-OpenRouter migration: ALL language runs on OpenRouter. The live model
-// list comes from `GET /chat-providers/models`, populated by:
-//   * OpenRouter's full catalog (the primary path — searchable in the selector),
-//   * any premium BYOK provider the user has connected (Anthropic/OpenAI/Gemini),
-//   * a single always-present LOCAL fallback entry (a small CPU model used only
-//     when OpenRouter is over its spend cap or unreachable — never the GPU).
+// The live list comes from `GET /chat-providers/models`, which merges:
+//   * the models the product provides (the primary path, searchable here),
+//   * any provider the user connected with their own key,
+//   * one always-present CPU fallback, used only when the primary lane is over
+//     its spend cap or unreachable.
+//
+// Which upstream carries a request is a ROUTING concern and stays on the
+// backend. Nothing user-facing in this file names a router: the selector groups
+// by who MAKES the model (see the vendor helpers below), because that is the
+// distinction a person choosing a model actually cares about.
 //
 // The dispatch (sub-agent / generative) registry is separate by design and
 // does NOT appear here.
@@ -81,18 +85,88 @@ export function modelDefFromEntry(e: ChatModelEntry): ModelDef {
   };
 }
 
-export const PROVIDER_LABEL: Record<string, string> = {
+// `PROVIDER_LABEL` and `PROVIDER_ORDER` were here. They mapped our ROUTING
+// lanes to display strings, which is what put a section header reading
+// "OPENROUTER" above the model list. Replaced by the vendor helpers below;
+// nothing imports them any more.
+
+
+// ── Vendors ──────────────────────────────────────────────────────────────────
+//
+// The selector groups by who MAKES the model, not by how we reach it.
+//
+// `provider` is our routing lane, and grouping on it put every model on earth
+// under one heading called "OPENROUTER" — which named our wholesaler, told the
+// user nothing, and collapsed a genuinely useful distinction (Anthropic vs
+// OpenAI vs Google) into a single undifferentiated list. Whether a request goes
+// out through OpenRouter, a BYOK key, or the CPU fallback is our plumbing; a
+// person choosing a model wants the maker's name.
+//
+// A side effect worth keeping: a BYOK Anthropic key and OpenRouter's
+// `anthropic/*` slugs now land in the SAME group, because from the user's side
+// they are the same thing — Claude — reached two different ways.
+
+export const VENDOR_LABEL: Record<string, string> = {
   auto:          "Auto",
-  "local-gemma": "Local GPU",
-  openrouter:    "OpenRouter",
   anthropic:     "Anthropic",
   openai:        "OpenAI",
-  gemini:        "Gemini",
+  google:        "Google",
+  gemini:        "Google",
+  "meta-llama":  "Meta",
+  deepseek:      "DeepSeek",
+  qwen:          "Qwen",
+  moonshotai:    "Moonshot AI",
+  mistralai:     "Mistral",
+  "x-ai":        "xAI",
+  cohere:        "Cohere",
+  perplexity:    "Perplexity",
+  nvidia:        "NVIDIA",
+  microsoft:     "Microsoft",
+  "local-gemma": "Local GPU",
   local:         "Local fallback",
 };
 
-// Auto first, then the local GPU brain, OpenRouter, BYOK, CPU fallback last.
-export const PROVIDER_ORDER: string[] = ["auto", "local-gemma", "openrouter", "anthropic", "openai", "gemini", "local"];
+// Vendors we want at the top, in this order. Anything else the catalog
+// returns is appended alphabetically — so a new vendor appearing upstream
+// shows up correctly without a code change, rather than vanishing from the
+// selector because it was not on a hardcoded list.
+export const VENDOR_PRIORITY: string[] = ["auto", "anthropic", "openai", "google"];
+
+// Always last: the fallbacks are a safety net, not a choice you go looking for.
+export const VENDOR_LAST: string[] = ["local-gemma", "local"];
+
+/** Who made this model. Falls back to the routing lane when the id carries no
+ *  vendor prefix (BYOK catalogs return bare ids like `claude-sonnet-5`). */
+export function vendorOf(m: { id: string; provider: string }): string {
+  if (m.provider === "auto" || m.provider === "local" || m.provider === "local-gemma") {
+    return m.provider;
+  }
+  const slash = m.id.indexOf("/");
+  if (slash > 0) return m.id.slice(0, slash).toLowerCase();
+  return m.provider;
+}
+
+/** Display name for a vendor key, title-casing anything we don't know. */
+export function vendorLabel(vendor: string): string {
+  if (VENDOR_LABEL[vendor]) return VENDOR_LABEL[vendor];
+  return vendor
+    .split(/[-_]/)
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+/** Vendor keys in display order: priority first, then unknowns A–Z, then
+ *  fallbacks. Takes the vendors actually present so empty groups never render. */
+export function orderVendors(present: Iterable<string>): string[] {
+  const set = new Set(present);
+  const out: string[] = [];
+  for (const v of VENDOR_PRIORITY) if (set.delete(v)) out.push(v);
+  const last: string[] = [];
+  for (const v of VENDOR_LAST) if (set.delete(v)) last.push(v);
+  out.push(...[...set].sort((a, b) => vendorLabel(a).localeCompare(vendorLabel(b))));
+  out.push(...last);
+  return out;
+}
 
 // Legacy export — kept so any straggling import compiles. New code should
 // pull the live list from ChatModelsContext instead.

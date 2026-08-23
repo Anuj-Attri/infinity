@@ -20,14 +20,11 @@ import {
   DEFAULT_MODEL_ID,
   FALLBACK_MODELS,
   modelDefFromEntry,
-  PROVIDER_ORDER,
   type ModelDef,
 } from "../config/models";
 
 type Ctx = {
   models: ModelDef[];
-  /** grouped by provider in PROVIDER_ORDER */
-  grouped: Array<{ provider: string; items: ModelDef[] }>;
   status: ChatProviderStatus;
   store:  ChatProviderStore;
   refresh: () => Promise<void>;
@@ -75,23 +72,10 @@ export function ChatModelsProvider({ children }: { children: ReactNode }) {
     const seen = new Set(defs.map((d) => d.id));
     if (!seen.has(DEFAULT_MODEL_ID)) defs.unshift(FALLBACK_MODELS[0]);
 
-    const buckets = new Map<string, ModelDef[]>();
-    for (const d of defs) {
-      const k = d.provider || "local";
-      if (!buckets.has(k)) buckets.set(k, []);
-      buckets.get(k)!.push(d);
-    }
-    const grouped: Array<{ provider: string; items: ModelDef[] }> = [];
-    for (const p of PROVIDER_ORDER) {
-      const arr = buckets.get(p);
-      if (arr && arr.length) grouped.push({ provider: p, items: arr });
-    }
-    // Any provider not in the canonical order (future-proofing) goes last.
-    for (const [p, arr] of buckets) {
-      if (!PROVIDER_ORDER.includes(p)) grouped.push({ provider: p, items: arr });
-    }
-
-    return { models: defs, grouped, status, store, refresh, loading };
+    // Grouping lives in the selector (ModelControls), which groups by VENDOR
+    // rather than by routing lane. A second provider-keyed grouping used to be
+    // computed here and consumed by nobody.
+    return { models: defs, status, store, refresh, loading };
   }, [items, status, store, refresh, loading]);
 
   return <ChatModelsContext.Provider value={value}>{children}</ChatModelsContext.Provider>;

@@ -86,7 +86,11 @@ export async function buildBriefingContext(): Promise<string> {
     "NO bullets, NO headers — it's a greeting, not a dashboard. End with an open,",
     "easy invitation (e.g. \"what do you want to get into?\").",
     "",
-    `Tone reference (match this feel, don't copy it): "${salutation} the user — looks`,
+    // The example carried a hardcoded first name, which the model copied
+    // straight into the greeting — so every account would have been welcomed
+    // by the same person's name. Whose name to use (if any) comes from the
+    // account, via the identity line the backend appends to the persona.
+    `Tone reference (match this feel, don't copy the words): "${salutation} — looks`,
     "like heavy rain today, and it's not the only thing pouring down with Nvidia",
     "sliding too. What would you like to do?\"",
   ].join("\n");

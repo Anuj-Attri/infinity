@@ -185,7 +185,9 @@ export default function UsageTile() {
 
         {data && (
           <>
-            <div className="usage-section-label">Chat (BYOK direct)</div>
+            {/* "BYOK" is our word, not the reader's. Matches the wording in
+                Settings → Connections so the two screens name one thing once. */}
+            <div className="usage-section-label">Your own provider keys</div>
             {chatEntries.map(([key, info]) => (
               <div key={key} className="usage-row">
                 <span className={`usage-dot ${info.connected ? "usage-dot-on" : "usage-dot-off"}`} />
@@ -200,12 +202,16 @@ export default function UsageTile() {
 
             <div className="usage-divider" />
 
-            <div className="usage-section-label">Dispatch (OpenRouter)</div>
+            {/* This row named the upstream provider twice. The spend it
+                reports is real and worth showing; which wholesaler we buy it
+                through is not the user's concern, and they cannot connect or
+                disconnect it — the product owns that key. */}
+            <div className="usage-section-label">Background tasks</div>
             <div className="usage-row">
               <span className={`usage-dot ${or?.connected ? "usage-dot-on" : "usage-dot-off"}`} />
-              <span className="usage-prov-name">OpenRouter</span>
+              <span className="usage-prov-name">Sub-agents</span>
               <span className="usage-prov-detail">
-                {or?.connected ? (or?.is_free_tier ? "Free tier" : "Paid") : "not connected"}
+                {or?.connected ? "available" : "unavailable"}
               </span>
             </div>
 

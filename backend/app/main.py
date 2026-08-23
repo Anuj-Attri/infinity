@@ -839,11 +839,17 @@ PERSONA_BACKUP_SIDEKICK_2026_07_17 = (
 # structurally (see OUTPUT_HYGIENE for the functional output guards, the router's
 # persona-heavy signal for model choice, and the removed temperature clamp so the
 # opinions actually breathe). Do not pad this with negative-rule lists.
+#
+# The name: this text used to say "when the user is wrong". A persona constant is
+# the wrong place to keep a person — the second account to sign in would have
+# been called by the first account's name in every reply. It is written in the
+# neutral form here, and whoever is actually talking is named by a separate
+# identity line (see _identity_line) built from THEIR account. See profile.py.
 DEFAULT_PERSONA = (
     "Nova — a voice of rationality. Blunt, economical, sharp. You think like a "
     "technical co-founder and speak like JARVIS: few words, precise, dry.\n"
     "\n"
-    "You have opinions and you state them. When the user is wrong, impulsive, or "
+    "You have opinions and you state them. When they're wrong, impulsive, or "
     "hand-waving, you say so — with the reason, not a hedge. You don't validate "
     "to be liked. You ground ideas: challenge the claim, ask for the evidence, "
     "name the tradeoff.\n"
@@ -861,11 +867,30 @@ OUTPUT_HYGIENE = (
     "\nOutput hygiene: your reply is plain spoken text — never wrap the whole "
     "message in quotation marks, and never print bracketed UI tags like [news] "
     "or [stocks] (those are broken artifacts, not speech). You already hold the "
-    "current state of the user's world this session (market, news, weather, tasks); "
+    "current state of their world this session (market, news, weather, tasks); "
     "when it's relevant, just say the real detail — never narrate fetching ("
     "\"let me pull that up\", \"firing up the movers\"). You have it and say it, "
     "or you don't and say so plainly."
 )
+
+
+def _identity_line(account_id: str) -> str | None:
+    """Name the person Nova is talking to — read from THEIR account, per turn.
+
+    Returns None when the account has not set a name, and the persona stays in
+    its neutral form. That is the correct behaviour, not a degraded one: an app
+    that invents a name for someone who never gave one is worse than one that
+    simply does not use a name.
+    """
+    from .profile import display_name
+    name = display_name(account_id)
+    if not name:
+        return None
+    return (
+        f"\nThe person you're speaking with is {name}. Address them by name "
+        f"when it's natural — not in every message, and never as a greeting "
+        f"formula."
+    )
 
 # Conditional addendum, appended AFTER the persona by _build_chat_messages
 # only when no_think is FALSE (i.e. deep-thinking mode is ON). Fast mode
@@ -1298,7 +1323,14 @@ async def _build_chat_messages(body: ChatIn) -> tuple[list[dict], list[Memory], 
 
     parts: list[str] = [active_persona]
 
-    # (1a) Output hygiene — the functional guards kept OUT of the verbatim
+    # (1a) Who is asking. Appended even under a custom persona — a user who
+    # rewrote the tone still expects to be called by their own name, and the
+    # line is about identity rather than voice.
+    _who = _identity_line(_account_id())
+    if _who:
+        parts.append(_who)
+
+    # (1b) Output hygiene — the functional guards kept OUT of the verbatim
     # persona core. Skipped when the user supplied a custom persona (their
     # surface, their call), since these reference the default's behavior.
     if not custom:
@@ -2562,6 +2594,25 @@ def _save_permissions(d: dict[str, str], *, account_id: str) -> None:
         raw = {SINGLE_TENANT.id: raw}
     raw[account_id] = d
     _write_permission_file(raw)
+
+
+class ProfileIn(BaseModel):
+    display_name: str | None = None
+
+
+@app.get("/profile")
+def profile_get() -> dict:
+    from .profile import display_name
+    return {"display_name": display_name(_account_id())}
+
+
+@app.put("/profile")
+def profile_set(body: ProfileIn) -> dict:
+    """Set the name Nova uses. An empty value clears it, and clearing is a
+    supported outcome rather than an error — the persona has a neutral form."""
+    from .profile import set_display_name
+    stored = set_display_name(_account_id(), body.display_name)
+    return {"ok": True, "display_name": stored}
 
 
 @app.get("/nova/permissions")
