@@ -119,23 +119,41 @@ def main() -> int:
     c.check("/health answers", code, 200)
 
     # --- 2. the door is shut ------------------------------------------------
-    # First and non-negotiable: with no token, nothing but /health exists.
+    # With no token, no API path exists. Not 401, not 403 — 404, so the surface
+    # cannot be enumerated and a stranger cannot tell there is anything here.
     print("\n2. the door is shut to anyone without the token")
-    for path in ("/", "/auth/status", "/admin/diagnostics", "/vault/stats", "/skills"):
+    for path in ("/auth/status", "/admin/diagnostics", "/vault/stats", "/skills"):
         code, _ = c.req(path)
         c.check(f"no token: {path}", code, 404)
 
-    # A wrong key must be indistinguishable from no key — a 403 would confirm
-    # to a stranger that there is something here worth attacking.
+    # "/" is the deliberate exception, and asserting 404 on it was wrong.
+    #
+    # It used to return a bare JSON 404, which made the deployment unopenable by
+    # its own owner — there was nowhere to type the key. It now sends a person
+    # to the door. So the property to check is not the status code; it is that a
+    # stranger does not get the APP. Checking the code alone would pass equally
+    # well against a service that had started serving the SPA to everyone.
+    code, body = c.req("/", accept="text/html")
+    c.check("no token: / lands on the door, not the app", '<div id="root">' not in body, True)
+    c.check("and the door has somewhere to type a key", 'id="k"' in body, True)
+    c.check("and the door does not leak the key", (env.get("ACCESS_TOKEN", "\0") not in body), True)
+
+    # A wrong key must not open anything, and must not confirm to a stranger
+    # that there is something here worth attacking.
     bad = urllib.request.Request(c.base + "/", headers={"User-Agent": UA, "X-Access-Token": "wrong-" + secrets.token_hex(4)})
     try:
         with urllib.request.urlopen(bad, timeout=90) as r:
-            code = r.status
+            code, bad_body = r.status, r.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
-        code = e.code
+        code, bad_body = e.code, ""
     except Exception as e:
-        code = f"{type(e).__name__}"
-    c.check("a wrong token is 404, not 403", code, 404)
+        code, bad_body = f"{type(e).__name__}", ""
+    # Both halves, because "the app is not in this response" passes trivially
+    # against an EMPTY response — and an empty response is what a network
+    # failure looks like. Asserting the door is present is what stops this
+    # check from going green for the wrong reason.
+    c.check("a wrong token still lands on the door", 'id="k"' in bad_body, True)
+    c.check("a wrong token does not open the app", '<div id="root">' not in bad_body, True)
 
     # --- 3. the door opens for the real key --------------------------------
     print("\n3. the real token opens it")
