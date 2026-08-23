@@ -33,7 +33,12 @@ export default defineConfig({
         manualChunks: {
           react: ["react", "react-dom"],
           markdown: ["react-markdown", "remark-gfm", "react-syntax-highlighter"],
-          editor: ["@monaco-editor/react"],
+          // Monaco is bundled now rather than pulled from a CDN, so this chunk
+          // went from a few kB of React wrapper to the whole editor engine.
+          // That is only affordable because TileGrid imports CodeTileLazy —
+          // nothing static references this chunk, so the browser fetches it the
+          // first time someone opens the Code tile and never otherwise.
+          editor: ["@monaco-editor/react", "monaco-editor"],
         },
       },
     },

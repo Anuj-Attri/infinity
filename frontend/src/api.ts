@@ -325,12 +325,18 @@ export async function fsRead(path: string): Promise<{ path: string; content: str
   if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.detail || `read ${r.status}`); }
   return r.json();
 }
-export async function fsWrite(path: string, content: string): Promise<void> {
+// Returns the path the SERVER settled on, workspace-relative. Callers need it:
+// creating "src/main.ts" has to open the tab under the path the tree will show,
+// and a normalised path from the server is the only one guaranteed to match.
+export async function fsWrite(
+  path: string, content: string,
+): Promise<{ ok: boolean; path: string; size: number }> {
   const r = await apiFetch(`${BASE}/fs/write`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ path, content }),
   });
   if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.detail || `write ${r.status}`); }
+  return r.json();
 }
 
 // Quick-add a LINK to the shared RAG index: the backend fetches + extracts the

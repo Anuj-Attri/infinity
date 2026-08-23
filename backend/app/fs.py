@@ -193,13 +193,52 @@ def _looks_binary(p: Path) -> bool:
 
 # -------------------------------------------------- /tree -----------------
 
-def _build_tree(root: Path) -> dict[str, Any]:
+WORKSPACE_LABEL = "Workspace"
+
+
+def rel_path(p: Path, *, account_id: str) -> str:
+    """A path as the CLIENT should see it: relative to the workspace, POSIX.
+
+    The browser used to receive `str(p)` — the absolute server path, which on a
+    hosted deployment looks like `/data/workspaces/<account-uuid>/src/main.py`.
+    That did three things, none of them wanted:
+
+      * it printed the account UUID in the file tree, because the workspace
+        directory IS named after the account (the owner's screenshot showed
+        exactly that as the root folder's name);
+      * it published the server's filesystem layout to anyone signed in; and
+      * it made every path the client echoed back to /read and /write an
+        absolute one, so the containment check in `_safe_resolve` was the only
+        thing standing between a typo and a path traversal.
+
+    Confinement has not changed and still lives in `_safe_resolve` — this is
+    defence in depth, not a replacement for it. But a client that has never been
+    told an absolute path cannot send one back by accident.
+
+    The workspace root is "" rather than "." or "/": empty is what
+    `_safe_resolve` already maps to the root.
+    """
+    root = workspace_dir(account_id)
+    try:
+        r = p.resolve().relative_to(root.resolve())
+    except ValueError:
+        # Outside the workspace. Unreachable via _safe_resolve, but returning a
+        # raw absolute path as a fallback would defeat the whole point.
+        return ""
+    return "" if str(r) == "." else r.as_posix()
+
+
+def _build_tree(root: Path, *, account_id: str) -> dict[str, Any]:
     """Depth-limited recursive directory listing. Skips noisy folders.
     Returns a single dict shaped like:
         { name, path, kind: 'dir', children: [...] }
         { name, path, kind: 'file', size }
+
+    `path` is workspace-relative (see rel_path); `name` of the root is a label,
+    never the directory's real name — that name is the account's UUID.
     """
     count = 0
+    ws = workspace_dir(account_id)
 
     def visit(p: Path, depth: int) -> dict[str, Any] | None:
         nonlocal count
@@ -208,7 +247,9 @@ def _build_tree(root: Path) -> dict[str, Any]:
         count += 1
         try:
             if p.is_dir():
-                node = {"name": p.name or str(p), "path": str(p), "kind": "dir", "children": []}
+                name = WORKSPACE_LABEL if p.resolve() == ws.resolve() else p.name
+                node = {"name": name, "path": rel_path(p, account_id=account_id),
+                        "kind": "dir", "children": []}
                 if depth >= MAX_TREE_DEPTH:
                     return node
                 try:
@@ -237,12 +278,14 @@ def _build_tree(root: Path) -> dict[str, Any]:
                     size = p.stat().st_size
                 except OSError:
                     size = 0
-                return {"name": p.name, "path": str(p), "kind": "file", "size": size}
+                return {"name": p.name, "path": rel_path(p, account_id=account_id),
+                        "kind": "file", "size": size}
         except OSError as e:
             log.warning("tree visit %s failed: %s", p, e)
             return None
 
-    return visit(root, 0) or {"name": root.name or str(root), "path": str(root), "kind": "dir", "children": []}
+    return visit(root, 0) or {"name": WORKSPACE_LABEL, "path": "",
+                              "kind": "dir", "children": []}
 
 
 @router.get("/tree")
@@ -258,7 +301,10 @@ async def tree(path: str | None = Query(None),
         raise HTTPException(status_code=404, detail="path does not exist")
     if not p.is_dir():
         raise HTTPException(status_code=400, detail="not a directory")
-    return {"root": str(workspace_dir(account_id)), "tree": _build_tree(p)}
+    # `root` used to be the absolute server path. Nothing in the client needed
+    # it, and it named the account. It is the relative root now, i.e. "".
+    return {"root": rel_path(p, account_id=account_id),
+            "tree": _build_tree(p, account_id=account_id)}
 
 
 # -------------------------------------------------- /read -----------------
@@ -277,7 +323,7 @@ async def read(path: str = Query(...),
         text = p.read_text(encoding="utf-8")
     except UnicodeDecodeError as e:
         raise HTTPException(status_code=415, detail=f"not utf-8 text: {e}")
-    return {"path": str(p), "content": text, "size": len(text)}
+    return {"path": rel_path(p, account_id=account_id), "content": text, "size": len(text)}
 
 
 # -------------------------------------------------- /write ----------------
@@ -312,4 +358,4 @@ async def write(body: WriteIn,
         tmp.replace(p)
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"write failed: {e}")
-    return {"ok": True, "path": str(p), "size": len(body.content)}
+    return {"ok": True, "path": rel_path(p, account_id=account_id), "size": len(body.content)}

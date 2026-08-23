@@ -27,7 +27,8 @@ import TodoTile from "./tiles/TodoTile";
 import StockTile from "./tiles/StockTile";
 import BrowserTile from "./tiles/BrowserTile";
 import FileTile from "./tiles/FileTile";
-import CodeTile from "./tiles/CodeTile";
+// Lazy on purpose — it carries the bundled Monaco engine. See CodeTileLazy.
+import CodeTile from "./tiles/CodeTileLazy";
 import TerminalTile from "./tiles/TerminalTile";
 import SubAgentTile from "./tiles/SubAgentTile";
 import MissionTile from "./tiles/MissionTile";

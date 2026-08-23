@@ -65,11 +65,72 @@ def test_the_workspace_itself_still_works(client):
     c, _, ws, _ = client
     r = c.get("/fs/tree")
     assert r.status_code == 200, r.text
-    assert r.json()["root"] == str(ws)
+    # The root is the RELATIVE root now, i.e. "". It used to be the absolute
+    # server path, which named the account and published the server's layout.
+    assert r.json()["root"] == ""
 
+    # An absolute path is still ACCEPTED — _safe_resolve confines it either way,
+    # and refusing it outright would be a behaviour change for no security gain.
+    # What changed is that the server no longer HANDS one out.
     r = c.get("/fs/read", params={"path": str(ws / "hello.py")})
     assert r.status_code == 200
     assert "print" in r.json()["content"]
+
+
+def test_nothing_the_client_receives_names_the_account_or_the_server(client):
+    """The owner's screenshot showed the account UUID as the file tree's root
+    folder, because the workspace directory IS named after the account and the
+    tree sent `str(path)` for every node.
+
+    Asserted over the WHOLE response rather than a field at a time: the leak was
+    in `path` on every node AND in the top-level `root`, and a per-field check
+    would have been written against whichever one someone happened to notice.
+    """
+    import json
+    c, _, ws, _ = client
+    from app.accounts import SINGLE_TENANT
+
+    (ws / "sub").mkdir(exist_ok=True)
+    (ws / "sub" / "deep.txt").write_text("x", encoding="utf-8")
+
+    blob = json.dumps(c.get("/fs/tree").json())
+    assert SINGLE_TENANT.id not in blob, "the account id is in the tree response"
+    assert str(ws) not in blob, "an absolute server path is in the tree response"
+    assert ws.name not in blob, "the workspace directory's real name leaked"
+
+    # And the same for the two routes that echo a path back.
+    blob = json.dumps(c.get("/fs/read", params={"path": "sub/deep.txt"}).json())
+    assert SINGLE_TENANT.id not in blob and str(ws) not in blob
+
+    blob = json.dumps(c.post("/fs/write", json={"path": "sub/deep.txt", "content": "y"}).json())
+    assert SINGLE_TENANT.id not in blob and str(ws) not in blob
+
+
+def test_the_paths_it_hands_out_are_the_paths_it_accepts(client):
+    """A round trip. Relative paths would be worthless if the client could not
+    send back what it was given — and this is exactly the kind of thing that
+    breaks on Windows, where `str(Path)` uses backslashes and the wire format
+    is POSIX."""
+    c, _, ws, _ = client
+    (ws / "sub").mkdir(exist_ok=True)
+    (ws / "sub" / "round.txt").write_text("trip", encoding="utf-8")
+
+    tree = c.get("/fs/tree").json()["tree"]
+    found = []
+
+    def walk(n):
+        if n["kind"] == "file":
+            found.append(n["path"])
+        else:
+            for ch in n.get("children", []):
+                walk(ch)
+
+    walk(tree)
+    assert "sub/round.txt" in found, f"expected a posix relative path, got {found}"
+    assert not any("\\" in p for p in found), f"a backslash reached the wire: {found}"
+
+    for p in found:
+        assert c.get("/fs/read", params={"path": p}).status_code == 200, p
 
 
 def test_a_relative_path_is_relative_to_the_workspace(client):

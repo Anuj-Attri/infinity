@@ -2251,20 +2251,29 @@ button { font-family: inherit; color: inherit; }
   color: var(--ink-1);
   outline: 0;
 }
-.tcode-input:focus { border-color: var(--ink-2); background: #fff; }
+/* Three dark-mode holes lived in this block, all the same mistake — a literal
+   colour where a token belongs:
+     :focus went to #fff while the text stayed --ink-1 (near-white in dark), so
+       typing into a focused field was invisible;
+     the button paired --ink-0 (near-WHITE in dark) with #fff text, so its label
+       disappeared entirely;
+     the error was #8b1f1f, dark red on a dark ground.
+   --bg inverts against --ink-0 in both themes, which is what the button wanted
+   all along, and --color-error is already theme-aware (#b02020 / #e05a5a). */
+.tcode-input:focus { border-color: var(--ink-2); background: var(--bg); }
 .tcode-btn {
   appearance: none; border: 0;
-  background: var(--ink-0); color: #fff;
+  background: var(--ink-0); color: var(--bg);
   font: 500 12px var(--font-sans);
   padding: 7px 14px;
   border-radius: 999px;
   cursor: pointer;
 }
-.tcode-btn:hover { background: var(--accent-deep); }
+.tcode-btn:hover { background: var(--accent); color: #fff; }
 .tcode-error {
   margin-top: 4px;
   font: 500 11.5px var(--font-mono);
-  color: #8b1f1f;
+  color: var(--color-error);
 }
 
 .tcode-split {
@@ -2305,17 +2314,115 @@ button { font-family: inherit; color: inherit; }
 
 .tcode-editor {
   position: relative;
-  background: #fff;
+  /* Was `background: #fff`, unconditionally, with no dark variant — a white
+     slab in the middle of a dark app. It also made the placeholder below
+     invisible: --ink-3 is rgba(232,230,227,.35) in dark, i.e. near-white at 35%
+     opacity, which on white is nothing at all.
+
+     --bg-tile is #ffffff in light and #1f1f1f in dark, so light mode is
+     unchanged to the pixel and dark mode stops being a hole. It shows through
+     only before the editor mounts and when no file is open; once Monaco is up
+     it paints its own surface over this. */
+  background: var(--bg-tile);
 }
 .tcode-noopen {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 6px;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+  color: var(--ink-3);
+}
+.tcode-noopen-h {
+  font: 500 13px var(--font-sans);
+  color: var(--ink-2);
+}
+.tcode-noopen-sub {
+  font: 400 11.5px var(--font-sans);
+  color: var(--ink-3);
+  max-width: 30ch;
+  line-height: 1.5;
+}
+.tcode-noopen-kbd {
+  font: 400 10.5px var(--font-mono);
+  color: var(--ink-3);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin: 0 2px;
+}
+/* Shown while the editor chunk is still arriving. The wrapper's own default
+   loading node renders before monaco exists, so the `theme` prop cannot reach
+   it — it is themed here instead. */
+.tcode-loading {
   display: flex; align-items: center; justify-content: center;
   height: 100%;
-  font: italic 300 12.5px var(--font-sans);
+  font: 400 11.5px var(--font-sans);
   color: var(--ink-3);
+  background: var(--bg-tile);
+}
+
+/* Tree header + "new file". The backend could always create files; there was
+   simply no control that called it, so an empty workspace was a dead end. */
+.tcode-tree-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 2px 8px 6px;
+  border-bottom: 1px solid var(--hairline-soft);
+  margin-bottom: 4px;
+}
+.tcode-tree-label {
+  font: 500 9.5px var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.tcode-new {
+  appearance: none; border: 0; background: transparent;
+  color: var(--ink-2);
+  font: 400 15px var(--font-sans);
+  line-height: 1;
+  width: 20px; height: 20px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 140ms var(--ease), color 140ms var(--ease);
+}
+.tcode-new:hover { background: var(--glass-2, rgba(127,127,127,.12)); color: var(--ink-0); }
+.tcode-new-row { padding: 0 8px 4px; }
+.tcode-new-input {
+  width: 100%;
+  background: var(--bg-soft);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 5px;
+  padding: 4px 8px;
+  font: 400 11.5px var(--font-mono);
+  color: var(--ink-0);
+  outline: 0;
+}
+.tcode-new-input:focus { border-color: var(--accent-soft); }
+.tcode-new-err {
+  padding: 2px 8px 6px;
+  font: 400 10.5px var(--font-mono);
+  color: var(--color-error);
+}
+.tcode-tree-empty {
+  padding: 10px 10px 12px;
+  font: 400 11.5px var(--font-sans);
+  color: var(--ink-3);
+  line-height: 1.5;
+}
+.tcode-linkbtn {
+  appearance: none; border: 0; background: transparent; padding: 0;
+  font: inherit; color: var(--accent-soft);
+  cursor: pointer; text-decoration: underline;
+}
+.tcode-noopen-actions {
+  display: flex; align-items: center; gap: 12px;
+  margin-top: 4px;
 }
 .code-indicator-dirty { color: var(--accent); }
 .code-indicator-ok    { color: var(--accent-soft); }
-.code-indicator-err   { color: #8b1f1f; }
+.code-indicator-err   { color: var(--color-error); }
 
 /* ─── Terminal tile (xterm + PTY) ──────────────────────────────── */
 .tterm-body {
@@ -5754,16 +5861,43 @@ option { color: #111; background: #fff; }
 /* ── Code tile: multi-file tabs (Cursor-style bar) ──────────────────────── */
 .tcode-main { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .tcode-main .tcode-editor { flex: 1; min-height: 0; }
-.tcode-tabs { display: flex; align-items: center; gap: 2px; overflow-x: auto; border-bottom: 1px solid var(--border, rgba(255,255,255,.1)); padding: 2px 4px 0; }
-.tcode-tab { display: flex; align-items: center; gap: 6px; padding: 5px 9px; font-size: 11.5px; border-radius: 6px 6px 0 0; opacity: .58; cursor: pointer; white-space: nowrap; border-bottom: 1.5px solid transparent; }
-.tcode-tab:hover { opacity: .85; background: var(--glass-2, rgba(255,255,255,.04)); }
-.tcode-tab.active { opacity: 1; background: var(--glass-2, rgba(255,255,255,.06)); border-bottom-color: var(--accent, #8b7cf6); }
+/* This block was written against four tokens that DO NOT EXIST anywhere in this
+   stylesheet — --border, --glass-2, --danger, --text-dim (64 uses between them,
+   file-wide). Every one silently fell through to its hardcoded fallback, and
+   those fallbacks were authored for a dark theme: `rgba(255,255,255,.04)` as a
+   hover is invisible on white. `var(--accent, #8b7cf6)` was worse than
+   invisible — #8b7cf6 is the *obsidian* accent, not the default #3d2f7a, so the
+   save button and the active-tab underline rendered in a colour from a
+   different theme, and #0b0910 text on #3d2f7a is about 1.4:1.
+
+   Rewritten against real tokens. The rest of the file still has ~55 uses of
+   those phantom tokens; that is a separate sweep. */
+.tcode-tabs { display: flex; align-items: center; gap: 2px; overflow-x: auto; border-bottom: 1px solid var(--hairline); padding: 2px 4px 0; }
+.tcode-tab { display: flex; align-items: center; gap: 6px; padding: 5px 9px; font-size: 11.5px; border-radius: 6px 6px 0 0; color: var(--ink-2); cursor: pointer; white-space: nowrap; border-bottom: 1.5px solid transparent; }
+.tcode-tab:hover { color: var(--ink-1); background: var(--bg-soft); }
+.tcode-tab.active { color: var(--ink-0); background: var(--bg-soft); border-bottom-color: var(--accent-soft); }
 .tcode-tab-ic { font-size: 8px; opacity: .6; font-family: var(--font-mono, monospace); letter-spacing: .03em; }
-.tcode-tab-name { }
-.tcode-tab-x { opacity: .5; font-size: 12px; width: 14px; text-align: center; border-radius: 4px; }
-.tcode-tab-x:hover { opacity: 1; background: rgba(255,255,255,.12); }
-.tcode-save { margin-left: auto; font-family: var(--font-mono, monospace); font-size: 11px; padding: 3px 13px; border-radius: 6px; background: var(--accent, #8b7cf6); color: #0b0910; border: none; font-weight: 600; cursor: pointer; }
-.tcode-save:disabled { opacity: .4; background: var(--glass-2, rgba(255,255,255,.05)); color: inherit; cursor: default; }
+.tcode-tab-x { opacity: .55; font-size: 12px; width: 14px; text-align: center; border-radius: 4px; }
+.tcode-tab-x:hover { opacity: 1; background: var(--hairline-strong); }
+.tcode-save { margin-left: auto; font-family: var(--font-mono, monospace); font-size: 11px; padding: 3px 13px; border-radius: 6px; background: var(--accent); color: #fff; border: none; font-weight: 600; cursor: pointer; }
+.tcode-save:hover:not(:disabled) { background: var(--accent-soft); }
+.tcode-save:disabled { background: var(--bg-soft); color: var(--ink-3); cursor: default; }
+
+/* A failed OPEN. Persistent and dismissible rather than a transient header
+   note: it used to be written to a state variable nothing rendered. */
+.tcode-openerr {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 6px 10px;
+  font: 400 11px var(--font-mono);
+  color: var(--color-error);
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--hairline);
+}
+.tcode-openerr-x {
+  appearance: none; border: 0; background: transparent;
+  margin-left: auto; padding: 0 2px;
+  color: inherit; font-size: 13px; line-height: 1; cursor: pointer;
+}
 
 /* ── Accent variants (data-accent, per theme) — one extra each ───────────── */
 /* Dark · Obsidian — Cursor-black: near-total-black field, brighter violet. */

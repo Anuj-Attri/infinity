@@ -4,7 +4,21 @@
 
 import { Component, type ErrorInfo, type ReactNode } from "react";
 
-type Props = { children: ReactNode; label?: string };
+type Props = {
+  children: ReactNode;
+  label?: string;
+  /** Render your own recovery UI instead of the stack trace. `reset` clears the
+   *  caught error so the subtree re-renders.
+   *
+   *  Added for lazily-loaded tiles. The app mounts ONE boundary, around the
+   *  whole TileGrid, which was right while every tile was a static import — a
+   *  tile that throws on mount is a code bug and the stack is what you want.
+   *  A lazy tile changes that: a dropped connection or a tab left open across a
+   *  redeploy (whose content-hashed chunk now 404s) makes the import reject, and
+   *  with only the outer boundary that replaces EVERY tile on the canvas with a
+   *  stack trace. A local boundary keeps that failure inside the one tile. */
+  fallback?: (error: Error, reset: () => void) => ReactNode;
+};
 type State = { error: Error | null };
 
 export default class ErrorBoundary extends Component<Props, State> {
@@ -19,7 +33,12 @@ export default class ErrorBoundary extends Component<Props, State> {
     console.error("[ErrorBoundary]", this.props.label || "(unlabeled)", error, info);
   }
 
+  reset = () => this.setState({ error: null });
+
   render() {
+    if (this.state.error && this.props.fallback) {
+      return this.props.fallback(this.state.error, this.reset);
+    }
     if (this.state.error) {
       return (
         <div className="error-boundary">

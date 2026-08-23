@@ -45,6 +45,29 @@ const ctx = await browser.newContext({
   viewport: { width: 1600, height: 1000 },
   ...(DOOR ? { extraHTTPHeaders: { "X-Access-Token": DOOR } } : {}),
 });
+
+// "The browser talks to our backend, and to nothing else."
+//
+// audit.mjs asserts that as a SOURCE property: no `fetch("https://…")` in
+// src/. That check passed for months while the shipped app downloaded the
+// entire Monaco editor from cdn.jsdelivr.net on every visit — because the
+// request came from inside node_modules, and because it was an injected
+// <script> tag rather than a fetch(). Two independent reasons a source scan
+// could never have seen it.
+//
+// So the property is asserted where it is actually true or false: at runtime,
+// against the built artifact, over the whole app. This file already opens every
+// tile, which makes it the right place. Recorded rather than blocked, so one
+// stray origin does not cascade into seventeen confusing tile failures — the
+// list is reported at the end.
+const EXTERNAL = new Set();
+const ORIGIN = new URL(APP).origin;
+ctx.on("request", (req) => {
+  const url = req.url();
+  if (url.startsWith("data:") || url.startsWith("blob:") || url.startsWith(ORIGIN)) return;
+  EXTERNAL.add(new URL(url).origin);
+});
+
 const page = await ctx.newPage();
 
 page.on("console", (m) => {
@@ -149,6 +172,26 @@ const failed = results.filter((r) => r.status === "FAIL");
 const warned = results.filter((r) => r.status === "errors");
 console.log(`\n${"=".repeat(60)}`);
 console.log(`tiles: ${results.length}   ok: ${results.length - failed.length - warned.length}   warn: ${warned.length}   FAIL: ${failed.length}`);
-writeFileSync(`${SHOTS}/report.json`, JSON.stringify({ app: APP, results }, null, 2));
+
+// Every origin the app reached while all seventeen tiles were opened. There is
+// no allowlist on purpose: the architecture is that the browser talks to our
+// backend and nothing else, so the correct number here is zero, and an
+// allowlist would just be somewhere to quietly park the next exception.
+const strangers = [...EXTERNAL].sort();
+if (strangers.length) {
+  console.log(`\nEXTERNAL ORIGINS CONTACTED (${strangers.length}):`);
+  for (const o of strangers) console.log(`   ${o}`);
+  console.log(
+    "\n  The browser must talk only to our own backend. A third-party request\n" +
+    "  hands the user's IP to a stranger, cannot be rate-limited by us, and\n" +
+    "  dies under any CSP worth having. Route it through the backend, or bundle\n" +
+    "  it — this is how the Monaco CDN dependency shipped unnoticed.",
+  );
+} else {
+  console.log("external origins contacted: none");
+}
+
+writeFileSync(`${SHOTS}/report.json`,
+  JSON.stringify({ app: APP, results, externalOrigins: strangers }, null, 2));
 await browser.close();
-process.exit(failed.length ? 1 : 0);
+process.exit(failed.length || strangers.length ? 1 : 0);

@@ -82,12 +82,33 @@ for (const [file, raw] of FILES) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. The browser talks to our backend, and to nothing else.
+// 3. Nothing in OUR SOURCE calls a third party directly.
 // ---------------------------------------------------------------------------
 // A direct third-party call hands the user's IP to a stranger from their own
 // browser, cannot be cached or rate-limited by us, and dies under any CSP worth
 // having. Upstream redundancy belongs server-side: one request from one address,
 // not one per user.
+//
+// ⚠ READ THIS BEFORE TRUSTING IT. This check is SOURCE-ONLY, and for months it
+// printed "no direct third-party fetch" while the shipped app downloaded the
+// entire Monaco editor from cdn.jsdelivr.net on every visit. Two independent
+// reasons it could not have seen that:
+//
+//   * the request came from inside node_modules (@monaco-editor/loader), and
+//     FILES only walks src/;
+//   * it was an injected <script> tag, not a fetch(), so even scanning the
+//     dependency would not have matched this regex.
+//
+// The property people actually care about — "the running app talks to nobody
+// but us" — is a RUNTIME property of the built artifact, and it is asserted
+// where it is true or false: e2e/smoke.mjs records every origin contacted while
+// all seventeen tiles are opened and fails on any that is not ours, and
+// e2e/editor-offline.mjs blocks the network outright and requires the editor to
+// still work. Do not widen this regex and imagine it covers that; it cannot.
+//
+// The label at the bottom of this file says "in source" for the same reason. A
+// gate that claims more than it tests is worse than no gate, because it is
+// believed.
 for (const [file, raw] of FILES) {
   const src = stripComments(raw);
   for (const m of src.matchAll(/fetch\(\s*[`"']((?:https?:)?\/\/[^`"'\s]+)/g)) {
@@ -158,17 +179,27 @@ for (const [file, raw] of FILES) {
 
 // ---------------------------------------------------------------------------
 
+// Each label says what was ACTUALLY tested. Several of these are source-level
+// properties that read like artifact-level ones — "no third-party fetch" was
+// the one that mattered, and it was believed for months while the shipped
+// bundle pulled Monaco from a CDN. The runtime counterparts are named below so
+// nobody has to guess which guarantee they are getting.
 const checks = [
   "HTML sinks pinned",
   "react-markdown urlTransform",
-  "no direct third-party fetch",
-  "no hardcoded hosts",
+  "no direct third-party fetch IN SOURCE",
+  "no hardcoded hosts IN SOURCE",
   "backend URL only in api.ts",
   "no secrets in source or storage",
   "no desktop-shell imports",
 ];
-console.log(`frontend audit — ${FILES.length} source files\n`);
+console.log(`frontend audit — ${FILES.length} source files (STATIC half of the gate)\n`);
 for (const c of checks) console.log(`  · ${c}`);
+console.log(
+  "\n  Runtime half — what the BUILT app actually does — lives in:\n" +
+  "    e2e/smoke.mjs           every origin contacted, all 17 tiles, must be ours\n" +
+  "    e2e/editor-offline.mjs  network blocked; the editor must still work",
+);
 
 if (failures.length) {
   console.error(`\n${"=".repeat(64)}\nFAILED (${failures.length}):\n`);

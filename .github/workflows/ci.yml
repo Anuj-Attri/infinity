@@ -272,6 +272,25 @@ jobs:
           ACCESS_TOKEN: ci-door-key
         run: node e2e/functional.mjs
 
+      # The editor must not need the internet. @monaco-editor/react fetches the
+      # whole engine from cdn.jsdelivr.net unless loader.config() is called, and
+      # it never was — so the shipped app downloaded its editor from a third
+      # party on every visit, and showed a permanently blank pane (no error, no
+      # timeout) anywhere that host was blocked.
+      #
+      # audit.mjs could not catch it: the request came from node_modules, via an
+      # injected <script>, so a source-level scan for fetch("https://…") was
+      # blind twice over. This blocks the network outright and requires the
+      # editor to mount, accept typing, and save — a property no string search
+      # can assert.
+      - name: The editor works with no internet
+        working-directory: frontend
+        env:
+          APP_URL: http://127.0.0.1:8000
+          SETUP_TOKEN: ci-setup-token
+          ACCESS_TOKEN: ci-door-key
+        run: node e2e/editor-offline.mjs
+
       # The canvas must be usable with fingers, not only a mouse. This is a
       # whole-app capability that no unit test can reach: it needs a real touch
       # pointer stream AND the right CSS, and it was silently absent — the app
