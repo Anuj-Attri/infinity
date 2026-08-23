@@ -834,7 +834,7 @@ button { font-family: inherit; color: inherit; }
   background: rgba(230, 80, 80, 0.06);
   border: 1px solid rgba(230, 80, 80, 0.30);
   border-radius: 8px;
-  color: #8b1f1f;
+  color: var(--color-error);
   font-family: var(--font-mono);
   font-size: 12px;
 }
@@ -1657,7 +1657,9 @@ button { font-family: inherit; color: inherit; }
 }
 .mem-add-input {
   flex: 1; min-width: 0;
-  background: #fff;
+  /* Was #fff under `color: var(--ink-0)`, which is #e8e6e3 in dark — near-white
+     text on a white field. You could type into it and not see what you typed. */
+  background: var(--bg-soft);
   border: 1px solid var(--hairline);
   border-radius: 6px;
   padding: 6px 10px;
@@ -1685,7 +1687,7 @@ button { font-family: inherit; color: inherit; }
   border: 1px solid rgba(181, 48, 48, 0.25);
   border-radius: 6px;
   font: 400 11.5px var(--font-mono);
-  color: #8b1f1f;
+  color: var(--color-error);
 }
 .mem-list {
   list-style: none; padding: 0; margin: 10px 0 0;
@@ -2387,7 +2389,7 @@ button { font-family: inherit; color: inherit; }
   cursor: pointer;
   transition: background 140ms var(--ease), color 140ms var(--ease);
 }
-.tcode-new:hover { background: var(--glass-2, rgba(127,127,127,.12)); color: var(--ink-0); }
+.tcode-new:hover { background: var(--bg-soft); color: var(--ink-0); }
 .tcode-new-row { padding: 0 8px 4px; }
 .tcode-new-input {
   width: 100%;
@@ -2740,13 +2742,18 @@ button { font-family: inherit; color: inherit; }
 }
 .tile-source-btn.is-on { color: #000; background: var(--accent-soft, #efe9ff); border-color: var(--accent, #8a6cff); }
 
+/* Used by Settings → Account → "Your name". It was `background: #fff` with
+   `color: var(--ink, #1a1a1a)` — and `--ink` is defined NOWHERE in this file,
+   so it fell through to near-black. In dark mode that is a white box with dark
+   text, which is glaring rather than merely wrong. Same disease as
+   `.tcode-editor`, and I shipped this one myself in the settings pass. */
 .settings-input {
-  font: 12px Inter, system-ui, sans-serif;
-  color: var(--ink, #1a1a1a); background: #fff;
-  border: 1px solid var(--hairline-strong, rgba(0,0,0,0.2)); border-radius: 8px;
+  font: 12px var(--font-sans);
+  color: var(--ink-0); background: var(--bg-soft);
+  border: 1px solid var(--hairline-strong); border-radius: 8px;
   padding: 6px 9px; outline: none;
 }
-.settings-input:focus { border-color: var(--accent, #8a6cff); }
+.settings-input:focus { border-color: var(--accent-soft); }
 .inf-detect-fab {
   position: absolute; right: 16px; bottom: calc(176px + env(safe-area-inset-bottom));
   z-index: 30; width: 48px; height: 48px; border-radius: 999px;

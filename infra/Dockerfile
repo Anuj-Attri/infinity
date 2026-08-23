@@ -23,6 +23,17 @@ COPY frontend/ ./
 # VITE_API_BASE_URL is deliberately NOT set: with no explicit value a production
 # build talks to its own origin, which is exactly right when this image serves
 # the page. See frontend/src/api.ts.
+#
+# The heap bump is not superstition. Bundling Monaco (the editor is served from
+# our own origin rather than a CDN — see frontend/src/lib/monacoSetup.ts) pushed
+# the Rollup pass past node's default old-space limit IN THIS IMAGE: the build
+# climbed to 2000 MB against a 2080 MB ceiling and died with "Ineffective
+# mark-compacts near heap limit", exit 134.
+#
+# It passed locally, where the default ceiling is higher — so this is a failure
+# that only ever appears in the container, which is exactly the class of thing
+# the image job exists to catch.
+ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN npm run build
 
 
