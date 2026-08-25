@@ -229,6 +229,42 @@ if (banner) {
      JSON.stringify(after.slice(0, 60)));
 }
 
+// ---- "+ New file" must never overwrite ------------------------------------
+// The exact keystrokes: click +, type the name of a file you already have,
+// press Enter. That used to return 200 and write the empty string — the file
+// was zeroed, and the tab opened with original:"" so it was not even marked
+// dirty. No trash, no git, no undo.
+confirms = [];
+const KEEP = `keep${STAMP}.ts`;
+await page.click(".tcode-new");
+await page.waitForSelector(".tcode-new-input", { timeout: 8000 });
+await page.fill(".tcode-new-input", KEEP);
+await page.keyboard.press("Enter");
+await page.waitForSelector(".monaco-editor", { timeout: 40000 });
+await page.waitForTimeout(1200);
+await page.click(".monaco-editor .view-lines");
+await page.keyboard.type("// years of work");
+await page.waitForTimeout(2600);           // let autosave land it
+
+await page.click(".tcode-new");
+await page.waitForSelector(".tcode-new-input", { timeout: 8000 });
+await page.fill(".tcode-new-input", KEEP);       // the SAME name
+await page.keyboard.press("Enter");
+await page.waitForTimeout(1800);
+
+const createErr = await page.$$eval(".tcode-new-err", (els) => els.map((e) => e.textContent).join(" "));
+ok("creating over an existing file is refused, and says why",
+   /already exists/i.test(createErr), JSON.stringify(createErr.slice(0, 70)));
+
+const survived = await page.evaluate(async (path) => {
+  const tok = localStorage.getItem("infinity.auth.token.v1");
+  const r = await fetch(`/fs/read?path=${encodeURIComponent(path)}`,
+                        { headers: { Authorization: `Bearer ${tok}` } });
+  return r.ok ? (await r.json()).content : `HTTP ${r.status}`;
+}, KEEP);
+ok("and the existing file was not emptied", survived.includes("years of work"),
+   JSON.stringify(survived.slice(0, 50)));
+
 // ---- closing the tile must not eat the last edit ---------------------------
 // Autosave fires after a pause, so there is always a window where typed text is
 // not yet on the server. Closing a TILE unmounts the component and drops its

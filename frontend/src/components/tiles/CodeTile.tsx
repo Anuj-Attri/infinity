@@ -284,7 +284,12 @@ export default function CodeTile() {
     if (!name) { setNewName(null); return; }
     setNewErr(null);
     try {
-      const r = await fsWrite(name, "");
+      // `""` is the version of a file that does NOT exist, so this is a
+      // create-only write: the server refuses with 409 if something is already
+      // there. Without it, typing the name of an existing file silently ZEROED
+      // it — 200, content "" — and the new tab opened with original: "" so it
+      // was not even marked dirty. No trash, no git, no undo.
+      const r = await fsWrite(name, "", "");
       setNewName(null);
       await openRoot();                       // the tree has to show it
       reveal(r.path);                         // ...and it has to be VISIBLE in it
@@ -299,6 +304,12 @@ export default function CodeTile() {
                       version: r.version, conflict: null }]);
       setActivePath(r.path);
     } catch (e) {
+      // The create-only 409. Say what actually happened — "changed on the
+      // server" is the wrong sentence for a file the user has never opened.
+      if (e instanceof FsConflictError) {
+        setNewErr(`${name} already exists — open it from the tree, or pick another name.`);
+        return;
+      }
       setNewErr(e instanceof Error ? e.message : String(e));
     }
   }, [newName, openRoot, reveal]);

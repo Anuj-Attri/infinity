@@ -443,3 +443,42 @@ def test_padding_still_cannot_escape(client):
         assert r.status_code in (403, 404), f"{attack!r} -> {r.status_code}"
         assert "CANARY" not in r.text
     assert (secret / ".env").exists()
+
+
+def test_creating_a_file_never_overwrites_an_existing_one(client):
+    """The new-file control is a CREATE, and must refuse rather than truncate.
+
+    Sending no `expect_version` at all returns 200 and writes the empty string —
+    so "click +, type the name of a file you already have, press Enter" emptied
+    it. The tab then opened with `original: ""`, so it was not even marked dirty,
+    and there is no trash, no git and no undo in this product.
+
+    `""` is the version of a file that does not exist, which makes create-only
+    expressible without a second route.
+    """
+    c, _, ws, _, _ = client
+    (ws / "important.py").write_text("YEARS OF WORK\n", encoding="utf-8")
+
+    r = c.post("/fs/write", json={"path": "important.py", "content": "", "expect_version": ""})
+    assert r.status_code == 409, r.text
+    assert (ws / "important.py").read_text(encoding="utf-8") == "YEARS OF WORK\n"
+
+    # And it still creates something that genuinely is not there.
+    r = c.post("/fs/write", json={"path": "fresh.py", "content": "", "expect_version": ""})
+    assert r.status_code == 200, r.text
+    assert (ws / "fresh.py").exists()
+
+
+def test_every_write_is_logged_with_the_guard_that_allowed_it(client, caplog):
+    """`/fs/write` was the only mutating route with no audit line. `guard` says
+    what the write was permitted BY, so an unguarded overwrite is greppable
+    rather than indistinguishable from a checked one."""
+    import logging
+    c, _, _, _, _ = client
+    with caplog.at_level(logging.INFO, logger="app.fs"):
+        c.post("/fs/write", json={"path": "logged.py", "content": "x", "expect_version": ""})
+        c.post("/fs/write", json={"path": "logged2.py", "content": "x"})
+    text = "\n".join(caplog.messages)
+    assert "guard=create" in text, text
+    assert "guard=unguarded" in text, text
+    assert "content" not in text.lower() or "x" not in text.split("guard=")[0][-3:]

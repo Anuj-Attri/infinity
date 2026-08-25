@@ -449,7 +449,14 @@ class WriteIn(BaseModel):
     #
     # Optional, because a caller that has not read the file has no version to
     # send and forcing one would only make it invent a bogus value. The client
-    # always sends it; a missing one is last-writer-wins and is logged as such.
+    # always sends it. A missing one is last-writer-wins, and the log line at
+    # the end of this handler records WHICH guard applied, so an unguarded
+    # overwrite is greppable after the fact rather than indistinguishable.
+    #
+    # `""` is a real value here, not "absent": it is the version of a file that
+    # does not exist, so sending it means "create this, and refuse if something
+    # is already there". The new-file control sends exactly that — without it,
+    # typing the name of an existing file silently truncated it to zero bytes.
     expect_version: str | None = None
 
 
@@ -504,6 +511,16 @@ async def write(body: WriteIn,
         tmp.replace(p)
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"write failed: {e}")
+    # The only mutating /fs route that had no audit line at all — delete and
+    # rename both log. `guard` records what the write was allowed BY, so an
+    # unguarded overwrite can be found afterwards instead of looking identical
+    # to a checked one. Paths only; never the content.
+    guard = ("create" if body.expect_version == ""
+             else "version" if body.expect_version is not None
+             else "unguarded")
+    log.info("fs write account=%s path=%s bytes=%d guard=%s",
+             account_id, rel_path(p, account_id=account_id),
+             len(body.content.encode("utf-8")), guard)
     return {"ok": True, "path": rel_path(p, account_id=account_id),
             "size": len(body.content), "version": version_of(p, account_id=account_id)}
 
