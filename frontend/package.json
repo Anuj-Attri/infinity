@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "smoke": "node e2e/smoke.mjs",
     "audit": "node e2e/audit.mjs",
-    "editor-offline": "node e2e/editor-offline.mjs"
+    "editor-offline": "node e2e/editor-offline.mjs",
+    "editor-files": "node e2e/editor-files.mjs"
   },
   "dependencies": {
     "@fontsource/caveat": "^5.2.8",

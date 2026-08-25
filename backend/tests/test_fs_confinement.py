@@ -319,3 +319,42 @@ def test_pre_ownership_files_move_into_the_single_tenant_workspace(monkeypatch, 
     d = fs.workspace_dir(ACCT)
     assert (d / "legacy.py").exists(), "a pre-ownership file was left behind"
     assert not (flat / "legacy.py").exists(), "it was copied rather than moved"
+
+
+# ---------------------------------------------------- round trip -----------
+
+def test_a_file_survives_being_opened_and_saved_unchanged(client):
+    """A no-op save must not alter a single byte.
+
+    `read_text` defaults to universal newlines, so every CRLF on disk arrived at
+    the editor as LF, and `/write` writes back with newline="" — no translation.
+    Opening a Windows-authored file and pressing Ctrl+S without touching a
+    character therefore rewrote every line ending in it, silently.
+
+    Autosave would have done that automatically, to every such file, the moment
+    it was opened. It also makes any content-hash version scheme unusable: a
+    file that cannot round-trip hashes differently on every save, so every save
+    reads as a conflict.
+    """
+    c, _, ws, _ = client
+    original = b"first line\r\nsecond line\r\nno trailing newline"
+    (ws / "windows.txt").write_bytes(original)
+
+    got = c.get("/fs/read", params={"path": "windows.txt"})
+    assert got.status_code == 200
+    content = got.json()["content"]
+    assert "\r\n" in content, "the CRLF was eaten on the way out"
+
+    assert c.post("/fs/write", json={"path": "windows.txt", "content": content}).status_code == 200
+    assert (ws / "windows.txt").read_bytes() == original, "a no-op save changed the file"
+
+
+def test_an_lf_file_stays_lf(client):
+    """The mirror image — the fix must not start INSERTING carriage returns."""
+    c, _, ws, _ = client
+    original = b"alpha\nbeta\n"
+    (ws / "unix.txt").write_bytes(original)
+    content = c.get("/fs/read", params={"path": "unix.txt"}).json()["content"]
+    assert "\r" not in content
+    c.post("/fs/write", json={"path": "unix.txt", "content": content})
+    assert (ws / "unix.txt").read_bytes() == original

@@ -2422,6 +2422,70 @@ button { font-family: inherit; color: inherit; }
   display: flex; align-items: center; gap: 12px;
   margin-top: 4px;
 }
+
+/* Right-click menu over a tree row. Absolutely positioned INSIDE .tcode-tree
+   (which is why that has position: relative) rather than fixed to the viewport:
+   the tile sits on a transformed canvas, and a transformed ancestor becomes the
+   containing block for position:fixed, so a "fixed" menu lands in the wrong
+   place and drifts when you pan. */
+.tcode-tree { position: relative; }
+.tcode-menu {
+  position: absolute;
+  z-index: 20;
+  min-width: 168px;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--bg-tile);
+  border: 1px solid var(--hairline-strong);
+  box-shadow: 0 12px 28px -12px rgba(0,0,0,0.35);
+}
+.tcode-menu-path {
+  padding: 4px 8px 6px;
+  font: 400 10px var(--font-mono);
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--hairline-soft);
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+.tcode-menu-item {
+  display: block; width: 100%;
+  appearance: none; border: 0; background: transparent;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 5px;
+  font: 400 12px var(--font-sans);
+  color: var(--ink-1);
+  cursor: pointer;
+}
+.tcode-menu-item:hover { background: var(--bg-soft); color: var(--ink-0); }
+.tcode-menu-danger { color: var(--color-error); }
+.tcode-menu-danger:hover { color: var(--color-error); }
+
+/* A conflict is a decision, not a notification — so it is not dismissible and
+   both choices are spelled out. Autosave stays off for the tab until one is
+   taken. */
+.tcode-conflict {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 7px 10px;
+  font: 400 11.5px var(--font-sans);
+  color: var(--ink-1);
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--hairline-strong);
+}
+.tcode-conflict-msg { flex: 1; min-width: 180px; }
+.tcode-conflict-btn {
+  appearance: none;
+  border: 1px solid var(--hairline-strong);
+  background: var(--bg-tile);
+  color: var(--ink-1);
+  font: 500 11px var(--font-sans);
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tcode-conflict-btn:hover { color: var(--ink-0); border-color: var(--ink-3); }
+.tcode-conflict-danger { color: var(--color-error); border-color: var(--color-error); }
 .code-indicator-dirty { color: var(--accent); }
 .code-indicator-ok    { color: var(--accent-soft); }
 .code-indicator-err   { color: var(--color-error); }

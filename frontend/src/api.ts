@@ -320,22 +320,101 @@ export async function fsTree(path?: string): Promise<{ root: string; tree: unkno
   if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.detail || `tree ${r.status}`); }
   return r.json();
 }
-export async function fsRead(path: string): Promise<{ path: string; content: string }> {
+export async function fsRead(
+  path: string,
+): Promise<{ path: string; content: string; version: string }> {
   const r = await apiFetch(`${BASE}/fs/read?path=${encodeURIComponent(path)}`);
   if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.detail || `read ${r.status}`); }
   return r.json();
 }
+
+/** Raised when the file changed on the server since it was opened. Its own type
+ *  because the caller must do something different with it — offering "overwrite
+ *  or reload" needs the version to overwrite WITH, and a bare Error loses it. */
+export class FsConflictError extends Error {
+  currentVersion: string;
+  constructor(message: string, currentVersion: string) {
+    super(message);
+    this.name = "FsConflictError";
+    this.currentVersion = currentVersion;
+  }
+}
+
 // Returns the path the SERVER settled on, workspace-relative. Callers need it:
 // creating "src/main.ts" has to open the tab under the path the tree will show,
 // and a normalised path from the server is the only one guaranteed to match.
+//
+// `expectVersion` is the lost-update check. Pass what /read (or the last write)
+// returned and the server refuses to overwrite anyone else's save; omit it and
+// it is last-writer-wins.
 export async function fsWrite(
-  path: string, content: string,
-): Promise<{ ok: boolean; path: string; size: number }> {
+  path: string, content: string, expectVersion?: string,
+): Promise<{ ok: boolean; path: string; size: number; version: string }> {
   const r = await apiFetch(`${BASE}/fs/write`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path, content }),
+    body: JSON.stringify(
+      expectVersion === undefined ? { path, content } : { path, content, expect_version: expectVersion }),
   });
-  if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(b.detail || `write ${r.status}`); }
+  if (r.status === 409) {
+    const b = await r.json().catch(() => ({}));
+    const d = b.detail || {};
+    throw new FsConflictError(d.message || "This file changed since you opened it.",
+                              d.current_version || "");
+  }
+  if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(detailText(b) || `write ${r.status}`); }
+  return r.json();
+}
+
+/** FastAPI's `detail` is a string for simple refusals and an OBJECT for the
+ *  structured ones these routes raise. `String(b.detail)` on an object renders
+ *  "[object Object]" — an error message that tells the user nothing at all. */
+function detailText(b: unknown): string {
+  const d = (b as { detail?: unknown })?.detail;
+  if (typeof d === "string") return d;
+  if (d && typeof d === "object" && typeof (d as { message?: string }).message === "string") {
+    return (d as { message: string }).message;
+  }
+  return "";
+}
+
+export type FsEntryInfo = {
+  path: string;
+  kind: "file" | "dir";
+  entries: number;
+  /** True when the tree shows this folder as empty and it is NOT. The tree
+   *  hides dotfiles and skips node_modules/.git/dist — so "delete this empty
+   *  folder" is the easiest way to destroy something you did not know was
+   *  there, and the confirmation has to say so. */
+  hidden_from_tree?: boolean;
+  over_limit?: boolean;
+  limit?: number;
+};
+
+export async function fsEntryInfo(path: string): Promise<FsEntryInfo> {
+  const r = await apiFetch(`${BASE}/fs/entry-info?path=${encodeURIComponent(path)}`);
+  if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(detailText(b) || `entry-info ${r.status}`); }
+  return r.json();
+}
+
+export async function fsDelete(
+  path: string, recursive = false,
+): Promise<{ ok: boolean; path: string; kind: string; deleted: number }> {
+  const r = await apiFetch(
+    `${BASE}/fs/entry?path=${encodeURIComponent(path)}&recursive=${recursive ? "true" : "false"}`,
+    { method: "DELETE" });
+  if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(detailText(b) || `delete ${r.status}`); }
+  return r.json();
+}
+
+/** Returns both paths, so open tabs can be retargeted from the old to the new. */
+export async function fsRename(
+  path: string, to: string,
+): Promise<{ ok: boolean; from: string; to: string }> {
+  const r = await apiFetch(`${BASE}/fs/rename`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path, to }),
+  });
+  if (!r.ok) { const b = await r.json().catch(() => ({})); throw new Error(detailText(b) || `rename ${r.status}`); }
   return r.json();
 }
 

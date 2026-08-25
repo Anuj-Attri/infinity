@@ -1,11 +1,26 @@
-// Code tile — Monaco editor + filesystem tree + multi-file tabs.
+// Code tile — Monaco editor + workspace tree + multi-file tabs.
 //
-//   folder → left tree; click a file → opens a TAB. Multiple tabs, each with
-//   its own unsaved-edits state. Ctrl/Cmd+S (or the Save button) writes the
-//   ACTIVE tab via /fs/write and clears its dirty dot. Cursor/PyCharm bar.
+//   left tree; click a file → opens a TAB. `+` creates one (a name with a slash
+//   creates the folders too). Right-click a row to rename or delete. Edits
+//   AUTOSAVE after a typing pause; Ctrl/Cmd+S and the Save button still work.
 //
-// The old save silently no-op'd: onMount bound Ctrl+S to a stale `save`
-// closure captured when no file was open. Fixed here via saveRef.
+// Three things in here are load-bearing and easy to undo by accident:
+//
+//   1. AUTOSAVE + CONFLICT are one mechanism. Every tab carries the server's
+//      `version` of what it last saw and sends it on every write. If the file
+//      changed underneath, the server refuses and the tab enters `conflict`,
+//      where autosave STOPS until the user chooses. Autosave without that check
+//      is a machine for silently destroying whichever copy saved first.
+//
+//   2. Anything reading `tabs` from a timer or a keybinding must go through
+//      `tabsRef`, not a dependency. This file already shipped that bug once:
+//      Ctrl+S was bound at mount to a `save` closure captured when no file was
+//      open, so it silently did nothing.
+//
+//   3. Tabs follow the filesystem. A rename retargets them (by PREFIX, so a
+//      folder rename moves the files under it) and a delete closes them. A tab
+//      left pointing at a deleted path is the worst case: the next autosave
+//      recreates the file the user just deleted.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
@@ -14,13 +29,28 @@ import Editor, { type OnMount } from "@monaco-editor/react";
 // workers, and defines the two themes below. See lib/monacoSetup.ts.
 import "../../lib/monacoSetup";
 import { useSettings } from "../../state/SettingsContext";
-import { fsTree, fsRead, fsWrite } from "../../api";
+import {
+  fsTree, fsRead, fsWrite, fsRename, fsDelete, fsEntryInfo, FsConflictError,
+} from "../../api";
 
 type FsNode =
   | { name: string; path: string; kind: "dir"; children: FsNode[] }
   | { name: string; path: string; kind: "file"; size: number };
 
-type Tab = { path: string; name: string; content: string; original: string };
+type Tab = {
+  path: string;
+  name: string;
+  content: string;
+  /** What is on the server, as far as we know. `content !== original` is dirty. */
+  original: string;
+  /** The server's version of `original`. Sent on every save so somebody else's
+   *  work cannot be silently overwritten. "" means "this file did not exist". */
+  version: string;
+  /** Set when the server refused a save because the file moved underneath us.
+   *  While set, autosave stops — retrying automatically would either lose their
+   *  change or lose ours, and the choice is the user's. */
+  conflict?: string | null;
+};
 
 function languageFor(name: string): string {
   const ext = (name.split(".").pop() || "").toLowerCase();
@@ -51,22 +81,49 @@ function fileIcon(name: string): string {
   return "·";
 }
 
-function TreeNode({ node, depth, current, onPick }: {
-  node: FsNode; depth: number; current: string | null; onPick: (path: string) => void;
+/** Every ancestor directory of a workspace-relative path. "a/b/c.ts" -> ["a","a/b"]. */
+function ancestorsOf(path: string): string[] {
+  const parts = path.split("/").filter(Boolean);
+  parts.pop();                                   // drop the leaf
+  const out: string[] = [];
+  for (let i = 0; i < parts.length; i++) out.push(parts.slice(0, i + 1).join("/"));
+  return out;
+}
+
+// Expansion lives in the PARENT, keyed by path, not in each node's own useState.
+//
+// It survived a refresh either way — the nodes are keyed by path, so React
+// reuses the instances — but local state cannot be opened from the outside, and
+// the tile needs exactly that: after creating "src/greeting.ts" the tree
+// refreshed with `src` still collapsed, so the file you had just made was
+// invisible in the tree while sitting open in a tab. Same for a rename that
+// moves a file into a folder.
+function TreeNode({ node, depth, current, expanded, onToggle, onPick, onContext }: {
+  node: FsNode; depth: number; current: string | null;
+  expanded: Set<string>;
+  onToggle: (path: string) => void;
+  onPick: (path: string) => void;
+  onContext: (e: React.MouseEvent, node: FsNode) => void;
 }) {
-  const [open, setOpen] = useState(depth === 0);
   const pad = { paddingLeft: 8 + depth * 12 };
   if (node.kind === "dir") {
+    // One meaning for the set: "in here" is expanded. The root starts in it (the
+    // state is seeded with ""), so there is no special case to get backwards.
+    const open = expanded.has(node.path);
     return (
       <div className="code-tree-dir">
-        <div className="code-tree-row code-tree-dirrow" style={pad} onClick={() => setOpen((v) => !v)}>
+        <div className="code-tree-row code-tree-dirrow" style={pad}
+             onClick={() => onToggle(node.path)}
+             onContextMenu={(e) => onContext(e, node)}>
           <span className="code-tree-chev">{open ? "▾" : "▸"}</span>
           <span className="code-tree-name">{node.name || "/"}</span>
         </div>
         {open && (
           <div className="code-tree-children">
             {node.children.map((c) => (
-              <TreeNode key={c.path} node={c} depth={depth + 1} current={current} onPick={onPick} />
+              <TreeNode key={c.path} node={c} depth={depth + 1} current={current}
+                        expanded={expanded} onToggle={onToggle} onPick={onPick}
+                        onContext={onContext} />
             ))}
           </div>
         )}
@@ -76,7 +133,9 @@ function TreeNode({ node, depth, current, onPick }: {
   const active = current === node.path;
   return (
     <div className={`code-tree-row code-tree-filerow ${active ? "active" : ""}`} style={pad}
-         onClick={() => onPick(node.path)} title={node.path}>
+         onClick={() => onPick(node.path)}
+         onContextMenu={(e) => onContext(e, node)}
+         title={node.path}>
       <span className="code-tree-fileicon">{fileIcon(node.name)}</span>
       <span className="code-tree-name">{node.name}</span>
     </div>
@@ -99,9 +158,81 @@ export default function CodeTile() {
   const [newName, setNewName] = useState<string | null>(null);
   const [newErr, setNewErr] = useState<string | null>(null);
   const [openErr, setOpenErr] = useState<string | null>(null);
+  // Which directories are open, by workspace-relative path. "" is the root.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
+
+  // Right-click menu over a tree row.
+  //
+  // Positioned ABSOLUTELY INSIDE the scrolling tree container, not fixed to the
+  // viewport. The tile lives on a canvas with `transform: translate() scale()`,
+  // and a transformed ancestor becomes the containing block for position:fixed
+  // — so a "fixed" menu placed at clientX/clientY lands somewhere else entirely,
+  // and moves when you pan. Anchoring inside the tree also means the menu
+  // scrolls with the row it belongs to.
+  const treeRef = useRef<HTMLDivElement | null>(null);
+  const [menu, setMenu] = useState<
+    { path: string; name: string; kind: "file" | "dir"; top: number; left: number } | null
+  >(null);
+  const [renaming, setRenaming] = useState<{ path: string; value: string } | null>(null);
+  const [actionErr, setActionErr] = useState<string | null>(null);
+
+  const onTreeContext = useCallback((e: React.MouseEvent, node: FsNode) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!node.path) return;                 // the workspace root has no actions
+    const box = treeRef.current?.getBoundingClientRect();
+    setActionErr(null);
+    setMenu({
+      path: node.path,
+      name: node.name,
+      kind: node.kind,
+      top: e.clientY - (box?.top ?? 0) + (treeRef.current?.scrollTop ?? 0),
+      left: e.clientX - (box?.left ?? 0),
+    });
+  }, []);
+
+  // Any click anywhere else dismisses it.
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(null);
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", close);
+    };
+  }, [menu]);
+
+  // The live tabs, readable from callbacks that must NOT depend on `tabs`.
+  //
+  // Anything that lists `tabs` as a dependency is rebuilt on every keystroke —
+  // which re-binds it into every tree row as you type — and anything that omits
+  // it without this ref reads a stale array. Ctrl+S already shipped that bug
+  // once (see saveRef below); autosave, closeTab and openFile all need the same
+  // discipline.
+  const tabsRef = useRef(tabs);
+  useEffect(() => { tabsRef.current = tabs; }, [tabs]);
 
   const active = tabs.find((t) => t.path === activePath) || null;
   const dirty = !!active && active.content !== active.original;
+
+  const toggleDir = useCallback((path: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+  }, []);
+
+  /** Open every directory above a path, so a file the user just made or moved
+   *  is actually visible in the tree rather than hidden inside a closed folder. */
+  const reveal = useCallback((path: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      for (const a of ancestorsOf(path)) next.add(a);
+      return next;
+    });
+  }, []);
 
   // No path opens the workspace, which is the only place the backend will serve
   // from. Asking the user for an absolute path made sense on the desktop build,
@@ -119,15 +250,16 @@ export default function CodeTile() {
 
   const openFile = useCallback(async (path: string) => {
     setSaveErr(null); setSaving("idle"); setOpenErr(null);
-    setTabs((prev) => (prev.some((t) => t.path === path) ? prev : prev));  // no-op guard
-    // focus if already open
-    if (tabs.some((t) => t.path === path)) { setActivePath(path); return; }
+    // Focus it if it is already open. (A `setTabs` that returned `prev` either
+    // way used to sit above this line, doing nothing at all.)
+    if (tabsRef.current.some((t) => t.path === path)) { setActivePath(path); return; }
     try {
       const body = await fsRead(path);
       const name = path.split(/[\\/]/).pop() || path;
       setTabs((prev) => prev.some((t) => t.path === body.path)
         ? prev
-        : [...prev, { path: body.path, name, content: body.content, original: body.content }]);
+        : [...prev, { path: body.path, name, content: body.content,
+                      original: body.content, version: body.version, conflict: null }]);
       setActivePath(body.path);
     } catch (e) {
       // Its own state, NOT saveErr. saveErr is only rendered when
@@ -139,7 +271,10 @@ export default function CodeTile() {
       // successful save clears it, wiping a read error the user never saw.
       setOpenErr(e instanceof Error ? e.message : String(e));
     }
-  }, [tabs]);
+    // No `tabs` dependency: it reads through tabsRef instead. Depending on
+    // `tabs` rebuilt this callback on every keystroke, which re-bound it into
+    // every tree row on every character typed.
+  }, []);
 
   // Create an empty file and open it. `path` is workspace-relative, so a name
   // containing a slash creates the folders on the way — which is the whole of
@@ -152,22 +287,21 @@ export default function CodeTile() {
       const r = await fsWrite(name, "");
       setNewName(null);
       await openRoot();                       // the tree has to show it
+      reveal(r.path);                         // ...and it has to be VISIBLE in it
       const leaf = name.split("/").pop() || name;
       setTabs((prev) => prev.some((t) => t.path === r.path)
         ? prev
-        : [...prev, { path: r.path, name: leaf, content: "", original: "" }]);
+        // The version comes from the write that just created it, so the first
+        // real save carries a version the server recognises. Without it the tab
+        // would send "" — the version of a file that does NOT exist — and every
+        // save after the first would conflict with itself.
+        : [...prev, { path: r.path, name: leaf, content: "", original: "",
+                      version: r.version, conflict: null }]);
       setActivePath(r.path);
     } catch (e) {
       setNewErr(e instanceof Error ? e.message : String(e));
     }
-  }, [newName, openRoot]);
-
-  // Read through a ref so the confirm below can see the CURRENT tabs without
-  // putting `tabs` in the dependency list. This file already documents the
-  // stale-closure bug that pattern caused for Ctrl+S; the same trap is one
-  // `tabs.find(...)` away here.
-  const tabsRef = useRef(tabs);
-  useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  }, [newName, openRoot, reveal]);
 
   const closeTab = useCallback((path: string) => {
     // The close affordance IS the dirty dot — it renders ● while there are
@@ -214,20 +348,184 @@ export default function CodeTile() {
     return () => window.removeEventListener("beforeunload", warn);
   }, [anyDirty]);
 
-  const save = useCallback(async () => {
-    const t = tabs.find((x) => x.path === activePath);
-    if (!t || t.content === t.original) return;
+  // One save path for the button, Ctrl+S and autosave.
+  //
+  // `force` is the "overwrite theirs" branch: it sends the server's CURRENT
+  // version instead of ours, which is the only way past the conflict check, and
+  // is only ever reached by the user clicking it.
+  const saveTab = useCallback(async (path: string, force = false) => {
+    const t = tabsRef.current.find((x) => x.path === path);
+    if (!t) return;
+    if (t.content === t.original && !force) return;
+    if (t.conflict && !force) return;          // never autosave over a conflict
+
     setSaving("saving"); setSaveErr(null);
+    const sending = t.content;
     try {
-      await fsWrite(t.path, t.content);
-      setTabs((prev) => prev.map((x) => x.path === t.path ? { ...x, original: t.content } : x));
+      const r = await fsWrite(t.path, sending, force ? undefined : t.version);
+      setTabs((prev) => prev.map((x) => x.path === t.path
+        // `original: sending`, not x.content — the user may have typed more
+        // while the request was in flight, and claiming THAT is saved would
+        // clear the dirty marker on text the server has never seen.
+        ? { ...x, original: sending, version: r.version, conflict: null }
+        : x));
       setSaving("saved");
       window.setTimeout(() => setSaving("idle"), 1400);
     } catch (e) {
+      if (e instanceof FsConflictError) {
+        // Not an error state — a decision. Park it on the tab, stop autosaving
+        // it, and let the user choose. Silently retrying loses somebody's work
+        // either way, and picking for them is the one thing we must not do.
+        setTabs((prev) => prev.map((x) => x.path === t.path
+          ? { ...x, conflict: e.message, version: e.currentVersion || x.version }
+          : x));
+        setSaving("idle");
+        return;
+      }
       setSaving("error");
       setSaveErr(e instanceof Error ? e.message : String(e));
     }
-  }, [tabs, activePath]);
+  }, []);
+
+  const save = useCallback(async () => {
+    if (activePath) await saveTab(activePath);
+  }, [activePath, saveTab]);
+
+  /** Re-read a file from the server, throwing away local edits. The "theirs
+   *  wins" half of a conflict, and the only way to clear one without writing. */
+  const openFileFresh = useCallback(async (path: string) => {
+    try {
+      const body = await fsRead(path);
+      setTabs((prev) => prev.map((t) => t.path === path
+        ? { ...t, content: body.content, original: body.content,
+            version: body.version, conflict: null }
+        : t));
+      setSaving("idle"); setSaveErr(null);
+    } catch (e) {
+      setOpenErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  // ── Rename ────────────────────────────────────────────────────────────────
+  const doRename = useCallback(async (from: string, to: string) => {
+    const target = to.trim().replace(/^\/+/, "");
+    if (!target || target === from) { setRenaming(null); return; }
+    setActionErr(null);
+    try {
+      const r = await fsRename(from, target);
+      setRenaming(null);
+      // Every open tab under the old path follows it. A DIRECTORY rename moves
+      // everything beneath it, so this is a prefix match, not an equality one —
+      // otherwise renaming a folder leaves its open files pointing at paths
+      // that no longer exist, and the next save 404s or, worse, recreates them
+      // at the old location.
+      setTabs((prev) => prev.map((t) => {
+        if (t.path === r.from) {
+          return { ...t, path: r.to, name: r.to.split("/").pop() || r.to };
+        }
+        if (t.path.startsWith(r.from + "/")) {
+          const moved = r.to + t.path.slice(r.from.length);
+          return { ...t, path: moved, name: moved.split("/").pop() || moved };
+        }
+        return t;
+      }));
+      setActivePath((cur) => {
+        if (cur === r.from) return r.to;
+        if (cur && cur.startsWith(r.from + "/")) return r.to + cur.slice(r.from.length);
+        return cur;
+      });
+      await openRoot();
+      reveal(r.to);
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [openRoot, reveal]);
+
+  // ── Delete ────────────────────────────────────────────────────────────────
+  const doDelete = useCallback(async (path: string, kind: "file" | "dir") => {
+    setActionErr(null);
+    try {
+      // Ask the SERVER what is in there before asking the user. The tree hides
+      // dotfiles and skips node_modules/.git/dist, so a folder can render as
+      // empty and hold a great deal — and "delete this empty folder" is the
+      // easiest way here to destroy something you did not know existed.
+      let recursive = false;
+      if (kind === "dir") {
+        const info = await fsEntryInfo(path);
+        if (info.over_limit) {
+          setActionErr(`${path} holds ${info.entries} items — too many to delete at once. `
+                     + `Remove some of it first.`);
+          return;
+        }
+        if (info.entries > 0) {
+          const hidden = info.hidden_from_tree
+            ? "\n\nThe file tree shows this folder as empty. It is not — it contains "
+              + "hidden or ignored files (dotfiles, node_modules, build output)."
+            : "";
+          if (!window.confirm(
+                `Delete ${path} and everything in it?\n\n`
+                + `${info.entries} item(s) will be permanently removed.${hidden}\n\n`
+                + `This cannot be undone.`)) return;
+          recursive = true;
+        } else if (!window.confirm(`Delete the empty folder ${path}?`)) {
+          return;
+        }
+      } else {
+        const t = tabsRef.current.find((x) => x.path === path);
+        const unsaved = t && t.content !== t.original
+          ? "\n\nIt has unsaved changes in an open tab." : "";
+        if (!window.confirm(`Delete ${path}?${unsaved}\n\nThis cannot be undone.`)) return;
+      }
+
+      await fsDelete(path, recursive);
+
+      // Close any tab on the deleted path — or under it, for a directory.
+      // Leaving one open means the next autosave RECREATES the file the user
+      // just deleted, which is the most confusing possible outcome.
+      const gone = (p: string) => p === path || p.startsWith(path + "/");
+      setTabs((prev) => {
+        const next = prev.filter((t) => !gone(t.path));
+        // Fall back to a REMAINING tab rather than to nothing: clearing
+        // activePath while other tabs are open shows "No file open" above a
+        // full tab bar.
+        setActivePath((cur) => (cur && gone(cur)) ? (next[0]?.path ?? null) : cur);
+        return next;
+      });
+      await openRoot();
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : String(e));
+    }
+  }, [openRoot]);
+
+  // ── Autosave ──────────────────────────────────────────────────────────────
+  //
+  // Deliberately NOT a keystroke-by-keystroke write. It fires once the typing
+  // stops, and only for a tab that is dirty and not in conflict.
+  //
+  // Autosave is a real trade in THIS product: there is no undo across a
+  // session, no git and no backup, so writing automatically removes the ability
+  // to walk away from an edit. It is on because the alternative is worse — the
+  // tile had no persistence at all, and work was lost by closing a tab — but
+  // that is exactly why the conflict check above is not optional, and why a
+  // failed autosave is loud rather than retried in silence.
+  const AUTOSAVE_MS = 1200;
+  const dirtySignature = tabs
+    .filter((t) => t.content !== t.original && !t.conflict)
+    .map((t) => t.path + ":" + t.content.length)
+    .join("|");
+
+  useEffect(() => {
+    if (!dirtySignature) return;
+    const id = window.setTimeout(() => {
+      for (const t of tabsRef.current) {
+        if (t.content !== t.original && !t.conflict) void saveTab(t.path);
+      }
+    }, AUTOSAVE_MS);
+    return () => window.clearTimeout(id);
+    // Keyed on the SIGNATURE, not on `tabs`: the timer must restart on every
+    // edit (so it fires after a pause, not during one) but must NOT restart
+    // when something unrelated to the text changes.
+  }, [dirtySignature, saveTab]);
 
   // FIX: Ctrl/Cmd+S must call the LIVE save, not the closure captured at mount.
   const saveRef = useRef(save);
@@ -278,7 +576,7 @@ export default function CodeTile() {
           </div>
         ) : (
           <div className="tcode-split">
-            <div className="tcode-tree">
+            <div className="tcode-tree" ref={treeRef}>
               <div className="tcode-tree-bar">
                 <span className="tcode-tree-label">Files</span>
                 <button type="button" className="tcode-new" title="New file"
@@ -299,13 +597,50 @@ export default function CodeTile() {
                 </div>
               )}
               {newErr && <div className="tcode-new-err">{newErr}</div>}
+              {actionErr && (
+                <div className="tcode-new-err" role="alert">
+                  {actionErr}
+                  <button type="button" className="tcode-linkbtn" style={{ marginLeft: 6 }}
+                          onClick={() => setActionErr(null)}>dismiss</button>
+                </div>
+              )}
+              {renaming && (
+                <div className="tcode-new-row">
+                  <input
+                    className="tcode-new-input" autoFocus value={renaming.value} spellCheck={false}
+                    placeholder="new name — or folder/new-name"
+                    onChange={(e) => setRenaming({ ...renaming, value: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") { e.preventDefault(); void doRename(renaming.path, renaming.value); }
+                      if (e.key === "Escape") { setRenaming(null); }
+                    }}
+                    onBlur={() => setRenaming(null)}
+                  />
+                </div>
+              )}
               {tree.kind === "dir" && tree.children.length === 0 && newName === null && (
                 <div className="tcode-tree-empty">
                   Nothing here yet — <button type="button" className="tcode-linkbtn"
                     onClick={() => { setNewErr(null); setNewName(""); }}>create a file</button>.
                 </div>
               )}
-              <TreeNode node={tree} depth={0} current={activePath} onPick={openFile} />
+              <TreeNode node={tree} depth={0} current={activePath}
+                        expanded={expanded} onToggle={toggleDir} onPick={openFile}
+                        onContext={onTreeContext} />
+              {menu && (
+                <div className="tcode-menu" style={{ top: menu.top, left: menu.left }}
+                     onClick={(e) => e.stopPropagation()}>
+                  <div className="tcode-menu-path">{menu.path}</div>
+                  <button type="button" className="tcode-menu-item"
+                          onClick={() => { setRenaming({ path: menu.path, value: menu.path }); setMenu(null); }}>
+                    Rename…
+                  </button>
+                  <button type="button" className="tcode-menu-item tcode-menu-danger"
+                          onClick={() => { const m = menu; setMenu(null); void doDelete(m.path, m.kind); }}>
+                    Delete…
+                  </button>
+                </div>
+              )}
             </div>
             <div className="tcode-main">
               {openErr && (
@@ -313,6 +648,25 @@ export default function CodeTile() {
                   {openErr}
                   <button type="button" className="tcode-openerr-x"
                           onClick={() => setOpenErr(null)} aria-label="Dismiss">×</button>
+                </div>
+              )}
+              {/* A conflict is a DECISION, not an error, so it is not
+                  dismissible: autosave stays off for this tab until one of
+                  these is chosen. Both options are destructive in opposite
+                  directions, so both say plainly whose work is lost. */}
+              {active?.conflict && (
+                <div className="tcode-conflict" role="alert">
+                  <span className="tcode-conflict-msg">
+                    <strong>{active.name}</strong> changed on the server since you opened it.
+                  </span>
+                  <button type="button" className="tcode-conflict-btn"
+                          onClick={() => void openFileFresh(active.path)}>
+                    Discard mine, load theirs
+                  </button>
+                  <button type="button" className="tcode-conflict-btn tcode-conflict-danger"
+                          onClick={() => void saveTab(active.path, true)}>
+                    Overwrite theirs
+                  </button>
                 </div>
               )}
               {tabs.length > 0 && (

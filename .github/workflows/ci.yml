@@ -291,6 +291,22 @@ jobs:
           ACCESS_TOKEN: ci-door-key
         run: node e2e/editor-offline.mjs
 
+      # Create, autosave, rename, delete, and the lost-update check. Every one
+      # of these can destroy work, and none can be proved by a unit test: what
+      # matters is where the TILE ends up — tabs following a rename, tabs
+      # closing on a delete, autosave refusing to run over a conflict.
+      #
+      # The backend guards have their own suite (test_fs_destructive.py), which
+      # re-runs the whole path-escape battery against unlink and rename rather
+      # than assuming that passing it for read implies passing it for delete.
+      - name: Files can be created, renamed and deleted
+        working-directory: frontend
+        env:
+          APP_URL: http://127.0.0.1:8000
+          SETUP_TOKEN: ci-setup-token
+          ACCESS_TOKEN: ci-door-key
+        run: node e2e/editor-files.mjs
+
       # The canvas must be usable with fingers, not only a mouse. This is a
       # whole-app capability that no unit test can reach: it needs a real touch
       # pointer stream AND the right CSS, and it was silently absent — the app
