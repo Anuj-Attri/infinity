@@ -28,6 +28,7 @@ import json
 import pathlib
 import secrets
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -72,13 +73,29 @@ class Checker:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(self.base + path, data=data, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(req, timeout=90) as r:
-                return r.status, r.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            return e.code, e.read().decode("utf-8", "replace")
-        except Exception as e:  # network/TLS/DNS
-            return None, f"{type(e).__name__}: {e}"
+        # A TRANSPORT failure is not a refusal, and reporting them identically
+        # is how this script cries wolf. Pushing to main redeploys, and for a
+        # few seconds the container is not accepting connections — which came
+        # back as `/ serves the SPA: got None` alongside three more, looking
+        # exactly like the app was broken. Two reruns seconds later: 24/24.
+        #
+        # So: retry ONLY the case where nothing answered, and only briefly. An
+        # HTTP status is an answer and is never retried — a 403 must stay a 403,
+        # or the door checks would paper over a real regression by waiting.
+        last = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=90) as r:
+                    return r.status, r.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                return e.code, e.read().decode("utf-8", "replace")
+            except Exception as e:  # network/TLS/DNS — nothing answered at all
+                last = f"{type(e).__name__}: {e}"
+                if attempt < 2:
+                    print(f"        (no answer from {path} — {last}; retrying, "
+                          f"a redeploy looks like this)")
+                    time.sleep(5)
+        return None, last or "unreachable"
 
     def check(self, label, got, want) -> bool:
         ok = got == want
