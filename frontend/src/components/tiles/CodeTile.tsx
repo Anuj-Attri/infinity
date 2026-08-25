@@ -527,6 +527,29 @@ export default function CodeTile() {
     // when something unrelated to the text changes.
   }, [dirtySignature, saveTab]);
 
+  // Closing the TILE must not eat the last edit.
+  //
+  // Autosave fires after a pause, so there is always a window in which typed
+  // text is not yet on the server — and closing a tile unmounts this component
+  // and throws its state away with no prompt (TileGrid just drops the id).
+  // beforeunload does not help: that is the browser tab, not the tile.
+  //
+  // The request survives the unmount because the app itself keeps running, so
+  // this genuinely lands. It cannot save a CONFLICTED tab — that needs a
+  // decision only the user can make — which is the remaining hole and is
+  // written up rather than papered over.
+  const flushRef = useRef<() => void>(() => {});
+  // Assigned in an effect, not during render: writing to a ref while rendering
+  // is a side effect, and React may render without committing.
+  useEffect(() => {
+    flushRef.current = () => {
+      for (const t of tabsRef.current) {
+        if (t.content !== t.original && !t.conflict) void saveTab(t.path);
+      }
+    };
+  });
+  useEffect(() => () => flushRef.current(), []);
+
   // FIX: Ctrl/Cmd+S must call the LIVE save, not the closure captured at mount.
   const saveRef = useRef(save);
   useEffect(() => { saveRef.current = save; }, [save]);

@@ -161,12 +161,31 @@ def _safe_resolve(raw: str | None, *, account_id: str) -> Path:
     raw string would let `workspace/../../etc/passwd` or a symlink out of the
     workspace both pass. Since the root is now per-account, the same test also
     stops one account reaching into another's.
+
+    IT MUST NOT MUTATE THE PATH. It used to do `raw = raw.strip()` before
+    building the Path, and `str.strip()` removes every unicode space — including
+    U+00A0, which is invisible. With `nb` and `nb ` both in a workspace, the
+    tree hands out both names verbatim, and a request naming the second one
+    silently RESOLVED TO THE FIRST. Reproduced end to end: asking to delete
+    `nb ` returned `{"ok":true,"path":"nb","deleted":1}` and destroyed `nb`,
+    while the directory actually named in the request survived. The confirmation
+    dialog shows the client's own string, whose trailing space is invisible, so
+    the user reads the right name and loses the other folder.
+
+    Worth stating precisely, because it is easy to file under the wrong heading:
+    this was NOT a containment escape. Stripping only ever NARROWS reach — every
+    whitespace-padded traversal still refused, because trimming a leading space
+    turns a relative string into an absolute one that containment then rejects.
+    It was silent, irreversible deletion of the caller's own data, in their own
+    workspace. That is worse than it sounds and better than it looks.
+
+    `strip()` survives in the emptiness test on the next line, where it is only
+    asking "did they send anything", and cannot retarget anything.
     """
     root = workspace_dir(account_id)
     if not raw or not raw.strip():
         return root
     try:
-        raw = raw.strip()
         candidate = Path(raw)
         # A relative path is relative to the workspace, never to the process's
         # working directory, which is the container root.

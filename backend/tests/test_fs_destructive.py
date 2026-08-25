@@ -394,3 +394,52 @@ def test_the_helpers_still_work_on_our_own_files(client):
     v = fs.version_of(ws / "keep.py", account_id=ACCT)
     assert v.startswith("sha256:")
     assert fs._count_entries(ws / "sub", account_id=ACCT) == 1
+
+
+# --------------------------------------------- the path must not be edited ---
+
+def test_a_path_is_never_silently_retargeted(client):
+    """`_safe_resolve` must operate on the path it was GIVEN.
+
+    It used to run `raw.strip()` first. `str.strip()` removes every unicode
+    space, U+00A0 among them, and U+00A0 is invisible — so with `nb` and `nb\u00a0`
+    both present, a request naming the second resolved to the first. Reproduced
+    against the running app before this test existed: deleting `nb\u00a0` answered
+    `{"ok":true,"path":"nb","deleted":1}` and destroyed `nb`, leaving the folder
+    that had actually been named. The user reads a confirmation showing their own
+    string, whose trailing space cannot be seen, and loses a different directory.
+
+    NOT an escape — stripping only ever narrows reach, and every padded
+    traversal was still refused. Silent, irreversible loss of the caller's own
+    work, which no containment test would ever have caught.
+    """
+    c, _, ws, _, _ = client
+    (ws / "nb").mkdir()
+    (ws / "nb" / "victim.txt").write_text("THE REAL ONE", encoding="utf-8")
+    decoy = ws / "nb\u00a0"
+    decoy.mkdir()
+    (decoy / "decoy.txt").write_text("the decoy", encoding="utf-8")
+
+    # Reading about the decoy must describe the DECOY.
+    info = c.get("/fs/entry-info", params={"path": "nb\u00a0"})
+    assert info.status_code == 200, info.text
+    assert info.json()["path"] == "nb\u00a0", "entry-info described a different directory"
+
+    # And deleting it must delete the decoy.
+    r = c.delete("/fs/entry", params={"path": "nb\u00a0", "recursive": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["path"] == "nb\u00a0"
+    assert not decoy.exists(), "the named directory survived"
+    assert (ws / "nb" / "victim.txt").exists(), "a DIFFERENT directory was destroyed"
+
+
+def test_padding_still_cannot_escape(client):
+    """The other half. Removing strip() must not open anything: a padded
+    traversal has to stay inside the workspace, whether by refusal or by being
+    treated as a literal (and therefore harmless) directory name."""
+    c, _, _, _, secret = client
+    for attack in ("  /etc/passwd", " ../outside/.env ", "\u00a0../outside/.env"):
+        r = c.get("/fs/read", params={"path": attack})
+        assert r.status_code in (403, 404), f"{attack!r} -> {r.status_code}"
+        assert "CANARY" not in r.text
+    assert (secret / ".env").exists()

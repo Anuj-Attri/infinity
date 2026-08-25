@@ -229,6 +229,40 @@ if (banner) {
      JSON.stringify(after.slice(0, 60)));
 }
 
+// ---- closing the tile must not eat the last edit ---------------------------
+// Autosave fires after a pause, so there is always a window where typed text is
+// not yet on the server. Closing a TILE unmounts the component and drops its
+// state — and beforeunload does not help, because that is the browser tab, not
+// the tile. The fix flushes pending saves on unmount; this is the proof.
+confirms = [];
+const LAST = `flush${STAMP}.ts`;
+await page.click(".tcode-new");
+await page.waitForSelector(".tcode-new-input", { timeout: 8000 });
+await page.fill(".tcode-new-input", LAST);
+await page.keyboard.press("Enter");
+await page.waitForSelector(".monaco-editor", { timeout: 40000 });
+await page.waitForTimeout(1500);
+
+await page.click(".monaco-editor .view-lines");
+await page.keyboard.type("// typed then closed immediately");
+// Deliberately INSIDE the autosave debounce — this is the window being tested.
+await page.waitForTimeout(200);
+const closeBtn = await page.$(".free-tile-close");
+ok("the tile has a close control", !!closeBtn);
+if (closeBtn) {
+  await closeBtn.click();
+  await page.waitForTimeout(2500);
+  const onDiskAfterClose = await page.evaluate(async (path) => {
+    const tok = localStorage.getItem("infinity.auth.token.v1");
+    const r = await fetch(`/fs/read?path=${encodeURIComponent(path)}`,
+                          { headers: { Authorization: `Bearer ${tok}` } });
+    return r.ok ? (await r.json()).content : `HTTP ${r.status}`;
+  }, LAST);
+  ok("the edit was flushed when the tile closed",
+     onDiskAfterClose.includes("typed then closed immediately"),
+     JSON.stringify(onDiskAfterClose.slice(0, 60)));
+}
+
 if (failures) await page.screenshot({ path: `${SHOTS}/editor-files.png` }).catch(() => {});
 await browser.close();
 console.log(failures ? `\n${failures} FAILED` : "\nworkspace file operations: all checks passed");
