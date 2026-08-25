@@ -213,6 +213,9 @@ export default function CodeTile() {
   const tabsRef = useRef(tabs);
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
 
+  /** Paths with a write in flight. One at a time each — see saveTab. */
+  const inFlight = useRef<Set<string>>(new Set());
+
   const active = tabs.find((t) => t.path === activePath) || null;
   const dirty = !!active && active.content !== active.original;
 
@@ -364,16 +367,30 @@ export default function CodeTile() {
   // `force` is the "overwrite theirs" branch: it sends the server's CURRENT
   // version instead of ours, which is the only way past the conflict check, and
   // is only ever reached by the user clicking it.
-  const saveTab = useCallback(async (path: string, force = false) => {
+  const saveTab = useCallback(async (path: string, force = false, background = false) => {
     const t = tabsRef.current.find((x) => x.path === path);
     if (!t) return;
     if (t.content === t.original && !force) return;
     if (t.conflict && !force) return;          // never autosave over a conflict
 
+    // ONE write in flight per path.
+    //
+    // Without this, a typist faster than the round-trip conflicts with
+    // THEMSELVES: the second autosave reads `version` from the tab, which the
+    // first write has not updated yet, sends the stale one, and gets a 409 that
+    // has nothing to do with anybody else. On a network-attached volume that is
+    // an ordinary amount of typing, not an edge case.
+    //
+    // Skipping is safe rather than lossy because the effect that schedules
+    // autosave is keyed on the content, so the text that missed its turn
+    // re-arms the timer and is written on the next pass.
+    if (inFlight.current.has(path)) return;
+    inFlight.current.add(path);
+
     setSaving("saving"); setSaveErr(null);
     const sending = t.content;
     try {
-      const r = await fsWrite(t.path, sending, force ? undefined : t.version);
+      const r = await fsWrite(t.path, sending, force ? undefined : t.version, { background });
       setTabs((prev) => prev.map((x) => x.path === t.path
         // `original: sending`, not x.content — the user may have typed more
         // while the request was in flight, and claiming THAT is saved would
@@ -394,7 +411,15 @@ export default function CodeTile() {
         return;
       }
       setSaving("error");
-      setSaveErr(e instanceof Error ? e.message : String(e));
+      // A background 401 does NOT bounce to the login screen (see apiFetch's
+      // `background` option) — but it must still say something true, because
+      // the text is only in this buffer and retrying will not help.
+      const msg = e instanceof Error ? e.message : String(e);
+      setSaveErr(/\b401\b/.test(msg)
+        ? "Not signed in — your changes are still here. Sign in again to save."
+        : msg);
+    } finally {
+      inFlight.current.delete(path);
     }
   }, []);
 
@@ -529,7 +554,7 @@ export default function CodeTile() {
     if (!dirtySignature) return;
     const id = window.setTimeout(() => {
       for (const t of tabsRef.current) {
-        if (t.content !== t.original && !t.conflict) void saveTab(t.path);
+        if (t.content !== t.original && !t.conflict) void saveTab(t.path, false, true);
       }
     }, AUTOSAVE_MS);
     return () => window.clearTimeout(id);
@@ -555,7 +580,7 @@ export default function CodeTile() {
   useEffect(() => {
     flushRef.current = () => {
       for (const t of tabsRef.current) {
-        if (t.content !== t.original && !t.conflict) void saveTab(t.path);
+        if (t.content !== t.original && !t.conflict) void saveTab(t.path, false, true);
       }
     };
   });

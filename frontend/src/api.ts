@@ -63,11 +63,26 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void {
   _onUnauthorized = fn;
 }
 
-async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+/** `background: true` suppresses the global 401 handler for this one request.
+ *
+ *  That handler clears the token and sets phase to "login" (AuthContext), which
+ *  unmounts the canvas and every tile with it. For a request the USER made, that
+ *  is right — they asked for something, the session is gone, show them the door.
+ *
+ *  For a request the user did not make it is data loss. Autosave fires on a
+ *  timer: an expired token would bounce them to the login screen mid-sentence
+ *  and destroy every open editor buffer as a side effect of a write they never
+ *  initiated. A background caller gets the 401 as an ordinary failure and is
+ *  expected to say so in place, keeping the text on screen. */
+type FetchOpts = { background?: boolean };
+
+async function apiFetch(
+  url: string, init: RequestInit = {}, opts: FetchOpts = {},
+): Promise<Response> {
   const headers = new Headers(init.headers || {});
   if (_authToken) headers.set("Authorization", `Bearer ${_authToken}`);
   const res = await fetch(url, { ...init, headers });
-  if (res.status === 401) _onUnauthorized?.();
+  if (res.status === 401 && !opts.background) _onUnauthorized?.();
   return res;
 }
 
@@ -349,12 +364,13 @@ export class FsConflictError extends Error {
 // it is last-writer-wins.
 export async function fsWrite(
   path: string, content: string, expectVersion?: string,
+  opts: { background?: boolean } = {},
 ): Promise<{ ok: boolean; path: string; size: number; version: string }> {
   const r = await apiFetch(`${BASE}/fs/write`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify(
       expectVersion === undefined ? { path, content } : { path, content, expect_version: expectVersion }),
-  });
+  }, opts);
   if (r.status === 409) {
     const b = await r.json().catch(() => ({}));
     const d = b.detail || {};
