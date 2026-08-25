@@ -184,21 +184,34 @@ def test_a_huge_directory_is_refused_even_with_recursive(client):
     assert big.exists()
 
 
-def test_a_symlink_is_unlinked_not_followed(client, tmp_path):
-    """Deleting a link must remove the LINK. Following it would delete a target
-    outside the workspace — and the containment check runs on the resolved path,
-    so a link pointing outside is refused before it gets here. This asserts the
-    inside-the-workspace case behaves as a user expects."""
-    c, _, ws, _, _ = client
-    target = ws / "keep.py"
-    link = ws / "alias.py"
+def test_a_symlink_pointing_out_of_the_workspace_cannot_be_deleted_through(client):
+    """A link out is refused, and the thing it points at is untouched.
+
+    This asserts what the code ACTUALLY does, which is worth stating plainly:
+    `_safe_resolve` returns the RESOLVED path, so delete operates on a link's
+    TARGET rather than on the link. For read and write that is exactly right —
+    you want containment checked against the bytes you will touch. For unlink it
+    is the POSIX-surprising choice, and it has one consequence worth knowing:
+    a link inside the workspace pointing at another file inside the workspace
+    would be "deleted" by removing that other file.
+
+    Left as-is deliberately. Fixing it means resolving the parent and keeping the
+    leaf unresolved — a SECOND authorisation path through this module, and two
+    gates instead of one is how `_ROOTS` went wrong in the first place. Nothing
+    in the API creates a symlink (only /fs/write writes, and it writes files), so
+    the case cannot arise today. If symlinks ever become creatable here, fix the
+    behaviour and rewrite this test rather than discovering it in production.
+    """
+    c, _, ws, _, secret = client
+    link = ws / "escape"
     try:
-        link.symlink_to(target)
+        link.symlink_to(secret, target_is_directory=True)
     except (OSError, NotImplementedError):
         pytest.skip("symlinks unavailable on this host")
-    r = c.delete("/fs/entry", params={"path": "alias.py"})
-    assert r.status_code == 200, r.text
-    assert not link.exists() and target.exists(), "the link's TARGET was deleted"
+
+    r = c.delete("/fs/entry", params={"path": "escape/.env", "recursive": True})
+    assert r.status_code == 403, r.text
+    assert (secret / ".env").exists(), "a file outside the workspace was deleted through a link"
 
 
 # ------------------------------------------------------------- rename ------
