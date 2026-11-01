@@ -1,0 +1,41 @@
+# Render Blueprint: the public guest-mode site on Render's free plan.
+# Create it once from the Render dashboard (New, Blueprint, pick this repo) or
+# with the "Deploy to Render" button in README.md. After that, every push to
+# main that passes CI deploys automatically.
+#
+# Free plan facts that shape this file: the service sleeps after 15 minutes
+# without visitors and takes about a minute to wake; the disk is wiped on every
+# restart or redeploy, which suits guest mode, since guest data is meant to go.
+
+services:
+  - type: web
+    name: infinity
+    runtime: docker
+    plan: free
+    region: virginia
+    dockerfilePath: ./infra/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    envVars:
+      # Asked for when the Blueprint is created. Use a key with its own credit
+      # limit: strangers spend it.
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GUEST_SESSIONS
+        value: "1"
+      - key: GUEST_IDLE_MINUTES
+        value: "30"
+      # The free instance has 512 MB and a small disk; cap concurrent guests.
+      - key: GUEST_MAX_SESSIONS
+        value: "50"
+      - key: SPEND_CAP_USD
+        value: "20"
+      - key: DATA_DIR
+        value: /tmp/infinity-data
+      # Render's edge appends its own address to X-Forwarded-For, so the
+      # visitor is the second entry from the right.
+      - key: TRUST_PROXY_HEADERS
+        value: "1"
+      - key: TRUSTED_PROXY_HOPS
+        value: "2"
