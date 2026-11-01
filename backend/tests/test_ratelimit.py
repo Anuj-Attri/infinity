@@ -88,3 +88,29 @@ def test_forwarded_headers_are_ignored_unless_a_proxy_is_trusted(client):
                             json={"password": "x", "device_name": "d"},
                             headers={"X-Forwarded-For": f"10.0.0.{i}"}).status_code)
     assert 429 in codes, "spoofed X-Forwarded-For bypassed the limit"
+
+
+def test_behind_a_proxy_a_forged_forwarded_header_does_not_buy_a_new_bucket(client, monkeypatch):
+    """The proxy appends the address it saw. A client that sends its own
+    X-Forwarded-For only controls the entries to the LEFT of that."""
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    c, _ = client
+    codes = []
+    for i in range(14):
+        codes.append(c.post("/auth/login",
+                            json={"password": "x", "device_name": "d"},
+                            headers={"X-Forwarded-For": f"10.0.0.{i}, 198.51.100.9"}).status_code)
+    assert 429 in codes, "a forged left-hand X-Forwarded-For entry bypassed the limit"
+
+
+def test_behind_a_proxy_different_clients_get_different_buckets(client, monkeypatch):
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    from app import ratelimit
+    from starlette.requests import Request
+    def req(xff):
+        return Request({"type": "http", "headers": [(b"x-forwarded-for", xff.encode())],
+                        "client": ("10.9.9.9", 1)})
+    assert ratelimit.client_key(req("1.1.1.1")) == "1.1.1.1"
+    assert ratelimit.client_key(req("evil, 2.2.2.2")) == "2.2.2.2"
+    monkeypatch.setenv("TRUSTED_PROXY_HOPS", "2")
+    assert ratelimit.client_key(req("evil, 3.3.3.3, 172.16.0.1")) == "3.3.3.3"

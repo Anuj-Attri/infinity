@@ -99,13 +99,28 @@ _BUCKETS: dict[tuple[str, str], _Bucket] = {}
 _last_sweep = 0.0
 
 
+def _proxy_hops() -> int:
+    try:
+        return max(1, int(os.environ.get("TRUSTED_PROXY_HOPS", "1")))
+    except ValueError:
+        return 1
+
+
 def client_key(request: Request) -> str:
-    """Who to count against. The socket peer unless a proxy is trusted."""
+    """Who to count against. The socket peer unless a proxy is trusted.
+
+    Behind a trusted proxy, the client address is read from the RIGHT of
+    X-Forwarded-For. A proxy appends the address it saw; everything to the left
+    of that came from the client and is whatever the client chose to send, so
+    reading the first entry would let anyone pick their own bucket.
+    TRUSTED_PROXY_HOPS says how many proxies sit in front (default 1; 2 for a
+    CDN in front of a platform proxy).
+    """
     if _trust_proxy():
-        xff = request.headers.get("x-forwarded-for") or ""
-        first = xff.split(",")[0].strip()
-        if first:
-            return first
+        parts = [p.strip() for p in (request.headers.get("x-forwarded-for") or "").split(",")]
+        parts = [p for p in parts if p]
+        if parts:
+            return parts[-min(_proxy_hops(), len(parts))]
     return (request.client.host if request.client else "") or "unknown"
 
 
