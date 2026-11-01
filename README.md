@@ -4,6 +4,8 @@ An AI workspace on one canvas. Chat with an assistant that can read your
 documents, browse the web, take notes and write code, and that points back to
 where its answers came from.
 
+![Infinity: "Ready when you are." above the ask-anything bar](assets/landing.png)
+
 ## What it does
 
 - **Chat** with an assistant that uses tools, not just talk.

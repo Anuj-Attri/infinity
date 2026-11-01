@@ -5,12 +5,15 @@ name: Deploy
 # Optional: secret VOYAGE_API_KEY; variables HF_SPACE ("owner/name") and
 # SPEND_CAP_USD. See scripts/deploy_hf_space.py.
 
+# Manual for now: Hugging Face requires a PRO plan for Docker Spaces, so an
+# automatic run would fail after every push on a free account. Once the
+# account can host Docker Spaces, restore the workflow_run trigger below.
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
+  # workflow_run:
+  #   workflows: [CI]
+  #   types: [completed]
+  #   branches: [main]
 
 concurrency:
   group: deploy
