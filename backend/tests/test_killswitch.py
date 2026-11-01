@@ -1,10 +1,5 @@
 """The killswitch — one control that stops anything which costs money.
 
-The owner's requirement, and the reason it moved earlier than MARK4.md had it:
-
-> "any versions released right now should be protected with killswitch cause i
->  want to save this app."
-
 The definition of done is narrow and worth stating exactly: **the NEXT request
 refuses.** Not the next minute, not after a restart, not once a scheduler
 notices. A control that takes time to apply is not a killswitch, it is a
@@ -21,7 +16,7 @@ Two things here are easy to get wrong and are what most of these tests are for:
 2. **Not looking like an outage.** Signing in, reading data you already have,
    and the operator console must keep working. A switch that makes the app
    appear crashed is one nobody dares flip, and the point is to stop spend, not
-   to lock the owner out while they work out what happened.
+   to lock the operator out while they work out what happened.
 """
 
 from __future__ import annotations
@@ -91,7 +86,7 @@ def test_a_refusal_without_a_reason_still_says_something_useful(ent):
 
 
 def test_it_is_per_account_not_global(ent):
-    """Stopping one tenant must not stop another. True before M3 makes it
+    """Stopping one tenant must not stop another. True before real accounts make it
     reachable, because retrofitting per-account onto a global flag is exactly
     the migration this codebase keeps paying for."""
     ent.set_killswitch("acct-a", True, "only this one")
@@ -125,7 +120,7 @@ def test_the_console_can_list_what_is_stopped(ent):
 @pytest.fixture
 def app_mod(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("MARK4_DEV_ACCOUNT", raising=False)
+    monkeypatch.delenv("INFINITY_DEV_ACCOUNT", raising=False)
     import app.paths, app.entitlements, app.accounts, app.auth, app.main
     importlib.reload(app.paths)
     e = importlib.reload(app.entitlements)
@@ -198,7 +193,7 @@ def test_spending_resumes_immediately_when_switched_back(app_mod, monkeypatch):
 # ── it must not look like an outage ──────────────────────────────────────────
 
 def test_a_stopped_deployment_answers_403_with_the_reason_not_500(app_mod):
-    """500 reads as "we broke" and sends the owner hunting a bug."""
+    """500 reads as "we broke" and sends the operator hunting a bug."""
     main, e = app_mod
     from fastapi import HTTPException  # noqa: F401
     from starlette.requests import Request
@@ -214,7 +209,7 @@ def test_a_stopped_deployment_answers_403_with_the_reason_not_500(app_mod):
 
 
 def test_signing_in_still_works_while_stopped(app_mod):
-    """Locking the owner out of their own paused instance would be perverse."""
+    """Locking the operator out of their own paused instance would be perverse."""
     main, e = app_mod
     from app.accounts import SINGLE_TENANT
     from fastapi.testclient import TestClient
@@ -268,7 +263,7 @@ def test_require_account_applies_the_entitlement_check(app_mod, monkeypatch):
     them, and the forgotten one is the expensive one.
     """
     _, e = app_mod
-    monkeypatch.setenv("MARK4_DEV_ACCOUNT", "1")
+    monkeypatch.setenv("INFINITY_DEV_ACCOUNT", "1")
     import app.accounts as A
     A = importlib.reload(A)
 

@@ -31,14 +31,14 @@ from . import keystore
 
 # The router sentinel. Not a real upstream model — the chat route resolves it
 # per-turn via resolve_auto_model(). The local-first lane it used to choose
-# from is DELETED (AGENTS.md: OpenRouter only; local/edge comes back later as
+# from is DELETED (OpenRouter only; local/edge comes back later as
 # an on-prem tier), so the label no longer promises one. The seam stays: the
 # cheap-vs-strong routing it exists for is still wanted, it just has no local
 # option now.
 AUTO_MODEL_ID = "infinity/auto"
 AUTO_MODEL_LABEL = "Auto"
 
-# What the sentinel resolves to. Env-overridable (AUTO_API_MODEL, the var Mark 3
+# What the sentinel resolves to. Env-overridable (AUTO_API_MODEL, the var the desktop version
 # used) so a deploy can move the default without a code change. KEEP THIS VALUE
 # IN SYNC with app/main.py :: _AUTO_API_MODEL — same env var, and two disagreeing
 # code defaults would route the same sentinel to two different models.
@@ -506,7 +506,7 @@ class GeminiProvider:
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_REFERER = "http://127.0.0.1:1420"
-OPENROUTER_TITLE = "Infinity (Reactor Mk3)"
+OPENROUTER_TITLE = "Infinity"
 # Zero-retention data policy applied to EVERY OpenRouter call.
 OPENROUTER_DATA_POLICY = {"data_collection": "deny"}
 
@@ -883,7 +883,7 @@ async def list_all_models() -> list[dict[str, Any]]:
 
 def _no_chat_provider(model_id: str | None) -> tuple[str, None]:
     """Nothing connected can serve this id. Loud by design: the local lane that
-    used to absorb this case is deleted (AGENTS.md — OpenRouter only), so a
+    used to absorb this case is deleted (OpenRouter only), so a
     quiet ('local', None) here would strand the turn with no explanation.
     Callers already branch on `instance is None` and degrade explicitly."""
     log.warning("no chat provider can serve model_id=%r — connect OpenRouter "

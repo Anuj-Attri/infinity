@@ -16,7 +16,7 @@ TWO RULES, both absolute:
 Auth: this router is NOT in main.py's _AUTH_EXEMPT set, so the app-level
 require_auth dependency gates it like every other route.
 
-TODO(M3): once accounts exist, this becomes per-account for spend/usage and
+TODO: once accounts exist, this becomes per-account for spend/usage and
 owner-only for the service-wide section.
 """
 
@@ -72,8 +72,8 @@ _CONFIG_KEYS: list[tuple[str, str, bool]] = [
     ("SETUP_TOKEN", "First-run claim on a public deployment. Unset on a public URL = setup refused.", False),
     ("NEWS_API_KEY", "The News tile.", False),
     ("SENTRY_DSN", "Error reporting. Enable PII scrubbing BEFORE setting this.", False),
-    ("DATABASE_URL", "Postgres. Per-account storage and retrieval (M3+).", False),
-    ("SUPABASE_URL", "Auth and storage (M3+).", False),
+    ("DATABASE_URL", "Postgres. Per-account storage and retrieval ", False),
+    ("SUPABASE_URL", "Auth and storage ", False),
     ("SUPABASE_SERVICE_ROLE_KEY", "Backend DB access. NOTE: bypasses RLS entirely.", False),
     ("VOYAGE_API_KEY", "Embeddings (voyage-4, 1024-dim), and therefore Vault vector search, note auto-linking and graph edges. Unset = chunks are stored WITHOUT vectors and search falls back to full text; POST /vault/reindex backfills once it is set.", False),
     ("ACCESS_TOKEN", "The outermost door. UNSET means the service answers only /health to anything that is not loopback — inert, not open. Required for a deployment to be usable at all.", True),
@@ -81,7 +81,7 @@ _CONFIG_KEYS: list[tuple[str, str, bool]] = [
     ("DATA_DIR", "Where state is written. Unset = the container's own disk, which a redeploy WIPES.", False),
     ("VAULT_DIR", "Override for where vault notes live. Unset is CORRECT — it then follows DATA_DIR, which is what keeps the notes on the same disk as their index.", False),
     ("WORKSPACE_DIR", "Override for the Code tile's workspace. Unset is CORRECT — it follows DATA_DIR. Every /fs call is confined to this one directory.", False),
-    ("MARK4_DEV_ACCOUNT", "DEV ONLY. Must be unset in production — it makes every request resolve to one account.", False),
+    ("INFINITY_DEV_ACCOUNT", "DEV ONLY. Must be unset in production — it makes every request resolve to one account.", False),
     ("ALLOW_PLAINTEXT_KEYSTORE", "DEV ONLY. Lets provider keys be written unencrypted.", False),
 ]
 
@@ -114,7 +114,7 @@ def _subsystems() -> list[Subsystem]:
                 "No encrypting backend on this platform (DPAPI is Windows-only). "
                 "Provider-key writes are REFUSED rather than stored in the clear; "
                 "the auth blob (a bcrypt hash) is still written."),
-        unblock=None if real else "M2: KMS envelope encryption. Until then, keys belong in the environment.",
+        unblock=None if real else "Planned: KMS envelope encryption. Until then, keys belong in the environment.",
     ))
 
     # --- embeddings ---------------------------------------------------------
@@ -148,7 +148,7 @@ def _subsystems() -> list[Subsystem]:
         status="blocked",
         detail="retrieve() raises NotImplementedError by design — the acceptance "
                "test exists before the thing that satisfies it.",
-        unblock="M5: pgvector search behind VISIBILITY_PREDICATE, with RLS live.",
+        unblock="Planned: pgvector search behind VISIBILITY_PREDICATE, with RLS live.",
     ))
 
     # --- killswitch ---------------------------------------------------------
@@ -179,15 +179,15 @@ def _subsystems() -> list[Subsystem]:
     ))
 
     # --- accounts -----------------------------------------------------------
-    dev_account = _is_set("MARK4_DEV_ACCOUNT")
+    dev_account = _is_set("INFINITY_DEV_ACCOUNT")
     out.append(Subsystem(
         id="accounts", name="Per-account ownership",
         status="degraded" if dev_account else "blocked",
-        detail=("MARK4_DEV_ACCOUNT is set — every request resolves to ONE "
+        detail=("INFINITY_DEV_ACCOUNT is set — every request resolves to ONE "
                 "hardcoded account. This must never be set in production."
                 if dev_account else
                 "No account layer yet. Auth is the single-tenant master password."),
-        unblock="M3: Supabase Auth, orgs/accounts/memberships, entitlement chain.",
+        unblock="Planned: Supabase Auth, orgs/accounts/memberships, entitlement chain.",
     ))
 
     # --- skills -------------------------------------------------------------
@@ -213,7 +213,7 @@ def _subsystems() -> list[Subsystem]:
         detail="Ingestion works; SEARCH does not, because it needs embeddings. "
                "Storage is the container's ephemeral disk, so it does not "
                "survive a redeploy. Live counts are on the Vault tile.",
-        unblock="M5 for search; M4 moves storage to Postgres with owner columns.",
+        unblock="Planned: vector search, and storage moves to Postgres with owner columns.",
     ))
 
     # --- public reachability ------------------------------------------------
@@ -234,7 +234,7 @@ def _subsystems() -> list[Subsystem]:
                 "without checking an owner, which is why the door exists at all."),
         unblock=None if locked else
                 "Set ACCESS_TOKEN to make the deployment reachable at all "
-                "(waitlist link: /access#<token>). Remove it at M3, when real "
+                "(waitlist link: /access#<token>). Remove it when real "
                 "accounts replace a shared secret.",
     ))
 
@@ -262,7 +262,7 @@ def _subsystems() -> list[Subsystem]:
                 "document text, emails and the hostname before any event leaves."
                 if dsn else
                 "No DSN set, so nothing is reported. Scrubbing is already written "
-                "and tested — MARK4.md makes that the order, because the first "
+                "and tested first, because the first "
                 "event is the one you cannot un-send."),
         unblock=None if dsn else "Set SENTRY_DSN. Nothing else is required.",
     ))
@@ -279,10 +279,10 @@ def _subsystems() -> list[Subsystem]:
                 if eph else
                 f"SQLite at {data_dir()} (DATA_DIR is set, so this should be a "
                 f"mounted volume that survives a redeploy)."),
-        unblock=("Mount a volume and set DATA_DIR to it. M4 then moves this to "
+        unblock=("Mount a volume and set DATA_DIR to it. A later release moves this to "
                  "Postgres with org_id/owner_account_id on every table."
                  if eph else
-                 "M4: Postgres with org_id/owner_account_id on every table."),
+                 "Planned: Postgres with org_id/owner_account_id on every table."),
     ))
 
     return out
@@ -315,7 +315,7 @@ async def killswitch_set(body: KillswitchIn) -> dict[str, Any]:
     use, and the point is to stop spend, not to lock the owner out.
 
     Gated by the app-level auth dependency like every other /admin route. It
-    becomes owner-only at M3, when there is more than one person who could call
+    becomes owner-only once accounts exist, when there is more than one person who could call
     it.
     """
     from . import entitlements

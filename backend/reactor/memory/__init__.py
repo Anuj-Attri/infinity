@@ -3,7 +3,7 @@
 Two surfaces:
     store   — SQLite-backed structured store for memories + conversation turns
     embed   — semantic embedding. NO PROVIDER IN THIS BUILD: every call
-              raises EmbedError until M5 lands Voyage `voyage-4` (1024-dim)
+              raises EmbedError until VOYAGE_API_KEY is set for Voyage `voyage-4` (1024-dim)
 
 We keep this deliberately simple: vectors live as BLOBs in the same SQLite
 row as the structured memory, queried via a numpy linear cosine scan. For

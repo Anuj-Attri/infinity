@@ -60,7 +60,7 @@ def test_non_http_schemes_are_still_rejected_by_connect() -> None:
     "not a url at all",
 ])
 def test_is_insecure_never_calls_a_refused_url_fine(url: str) -> None:
-    """Mark 3 reported all of these as fine, because on a tailnet they were.
+    """The desktop version reported all of these as fine, because on a private network they were.
     _assert_safe_url refuses every one of them now."""
     assert mcp_client.is_insecure(url) is True, f"{url} reported as secure"
 

@@ -11,7 +11,7 @@
 // "First message of a new day" is tracked by persisting the last-briefed local
 // date in localStorage, so it survives app restarts and only fires once/day.
 // Both the day-rollover AND the greeting derive from the DEVICE's local clock
-// (new Date() — the user's machine TZ, its own zone), never UTC.
+// (new Date(), the device's own time zone), never UTC.
 // The data is gathered through the existing tile-read path (gatherTileData).
 
 import { gatherTileData } from "./tileRegistry";
@@ -24,7 +24,7 @@ function todayLocalISO(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-/** Time-of-day greeting from the DEVICE's LOCAL clock (the device's own zone). */
+/** Time-of-day greeting from the device's local clock. */
 function localGreeting(): { salutation: string; period: string } {
   const h = new Date().getHours();           // local hours, 0–23
   if (h < 5)  return { salutation: "Hey",            period: "late night" };

@@ -56,7 +56,7 @@ _AUDIT_PATH = data_path("mcp_audit.jsonl")    # one line per tool call (no secre
 _HANDS_PATH = _REPO_ROOT / "backend" / "mcp.hands.json"   # config-driven built-in servers
 
 _PROTOCOL = "2025-06-18"
-_CLIENT_INFO = {"name": "Infinity (Reactor Mk3)", "version": "1.0"}
+_CLIENT_INFO = {"name": "Infinity", "version": "1.0"}
 _TIMEOUT = 30.0
 
 # In-memory cache of the last successful tools/list per server id.
@@ -116,8 +116,8 @@ def set_enabled(on: bool) -> None:
 def is_insecure(url: str) -> bool:
     """True for any MCP URL that is not https.
 
-    This USED to answer a different question. In Mark 3 the app lived on a
-    tailnet, so plain http to localhost, RFC1918 or 100.64-127.x was the normal
+    This USED to answer a different question. In the desktop version the app lived on a
+    private network, so plain http to localhost, RFC1918 or 100.64-127.x was the normal
     case and was reported as fine; only EXTERNAL http was flagged. Every one of
     those addresses is now REFUSED outright by browse._assert_safe_url, which
     _rpc calls before any request — so the old answer is not merely stale, it

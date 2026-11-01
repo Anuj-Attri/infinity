@@ -1,7 +1,7 @@
 // Device-class detection for the responsive web pass.
 //
-// Ported from Mark 3's mobile/useIsMobile.ts with the Capacitor branch removed:
-// Mark 4 is a web app, so "is this a phone" is a pure viewport-and-pointer
+// Ported from the desktop version's mobile/useIsMobile.ts with the Capacitor branch removed:
+// This is a web app, so "is this a phone" is a pure viewport-and-pointer
 // question. The dedicated phone shell (MobileShell / VoiceRemote) is deferred,
 // so nothing here switches layouts wholesale — it only lets individual
 // components adapt.

@@ -14,13 +14,18 @@ import {
 } from "react";
 import {
   getAuthStatus, getAuthMe, authLogin, authSetup, authLogout, authReset,
-  setAuthToken, setUnauthorizedHandler,
+  setAuthToken, setUnauthorizedHandler, guestStart, guestEndBeacon,
 } from "../api";
 
 export type AuthPhase = "loading" | "setup" | "login" | "authed" | "unreachable";
 
 type Ctx = {
   phase: AuthPhase;
+  /** True on a public instance: no sign-in, and this tab's data is deleted
+   *  when it closes. */
+  guest: boolean;
+  /** Why the last guest session could not start, for the retry screen. */
+  guestError: string | null;
   deviceName: string | null;
   /** True when this deployment requires an out-of-band SETUP_TOKEN to claim. */
   setupTokenRequired: boolean;
@@ -47,6 +52,29 @@ function saveToken(t: string | null) {
   } catch { /* ignore */ }
 }
 
+// App storage keys. Guest mode clears them so nothing outlives the tab.
+const APP_KEY_PREFIXES = ["infinity.", "supernova."];
+
+/** Remove this app's keys from persistent browser storage.
+ *
+ *  The backend's /runtime-config.js normally makes this unnecessary by pointing
+ *  the app at per-tab storage before any code runs. That script is only served
+ *  when the backend also serves the page, so this is the fallback for a
+ *  frontend hosted somewhere else. */
+function clearPersistentAppStorage() {
+  try {
+    const w = window as unknown as { __INFINITY_GUEST__?: boolean };
+    if (w.__INFINITY_GUEST__ === true) return;   // already per-tab
+    const L = window.localStorage;
+    for (let i = L.length - 1; i >= 0; i--) {
+      const k = L.key(i);
+      if (k && APP_KEY_PREFIXES.some((p) => k.startsWith(p))) L.removeItem(k);
+    }
+  } catch (e) {
+    console.error("could not clear browser storage for the guest session", e);
+  }
+}
+
 const AuthCtx = createContext<Ctx | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -55,6 +83,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [storeBackend, setStoreBackend] = useState<string | null>(null);
   const [setupTokenRequired, setSetupTokenRequired] = useState(false);
   const [setupAvailable, setSetupAvailable] = useState(true);
+  const [guest, setGuest] = useState(false);
+  const [guestError, setGuestError] = useState<string | null>(null);
+  const guestRef = useRef(false);
 
   // Keep api.ts's token in sync and expose a setter the 401 handler can use.
   const applyToken = useCallback((t: string | null, name: string | null) => {
@@ -80,6 +111,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Absent on an older backend — treat as available so we do not lock out a
     // deployment that predates the flag.
     setSetupAvailable(status.setup_available !== false);
+
+    if (status.guest_mode) {
+      guestRef.current = true;
+      setGuest(true);
+      setGuestError(null);
+      const stored = loadToken();
+      if (stored) {
+        // A reload in the same tab: keep the session if the server still has it.
+        setAuthToken(stored);
+        try {
+          if (await getAuthMe()) {
+            setDeviceName("Guest session");
+            setPhase("authed");
+            return;
+          }
+        } catch { /* expired or the server restarted; start a new one */ }
+      }
+      clearPersistentAppStorage();
+      try {
+        const g = await guestStart();
+        applyToken(g.token, "Guest session");
+        setPhase("authed");
+      } catch (e) {
+        applyToken(null, null);
+        setGuestError(e instanceof Error ? e.message : String(e));
+        setPhase("unreachable");
+      }
+      return;
+    }
 
     if (!status.password_set) {
       applyToken(null, null);
@@ -114,12 +174,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     setUnauthorizedHandler(() => {
       applyToken(null, null);
+      // A guest has no login screen. The session expired or the server
+      // restarted, and its data is gone either way, so start a fresh one.
+      if (guestRef.current) { void refreshRef.current(); return; }
       setPhase("login");
     });
     return () => setUnauthorizedHandler(null);
   }, [applyToken]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  // Closing the tab ends the guest session. pagehide also fires on a reload,
+  // which is why the server waits a short grace period before deleting.
+  useEffect(() => {
+    if (!guest) return;
+    const onHide = () => {
+      const t = loadToken();
+      if (t) guestEndBeacon(t);
+      clearPersistentAppStorage();
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
+  }, [guest]);
 
   const setup = useCallback(async (password: string, setupToken?: string) => {
     await authSetup(password, setupToken);
@@ -136,6 +212,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     try { await authLogout(); } catch { /* revoke best-effort */ }
     applyToken(null, null);
+    if (guestRef.current) {
+      // For a guest this is "clear my session": the server deleted it, so
+      // wipe the tab's storage and start clean.
+      try { window.sessionStorage.clear(); } catch { /* ignore */ }
+      clearPersistentAppStorage();
+      window.location.reload();
+      return;
+    }
     setPhase("login");
   }, [applyToken]);
 
@@ -147,9 +231,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [applyToken]);
 
   const value = useMemo<Ctx>(() => ({
-    phase, deviceName, storeBackend, setupTokenRequired, setupAvailable,
+    phase, guest, guestError, deviceName, storeBackend, setupTokenRequired, setupAvailable,
     setup, login, logout, resetAll, refresh,
-  }), [phase, deviceName, storeBackend, setupTokenRequired, setupAvailable,
+  }), [phase, guest, guestError, deviceName, storeBackend, setupTokenRequired, setupAvailable,
        setup, login, logout, resetAll, refresh]);
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;

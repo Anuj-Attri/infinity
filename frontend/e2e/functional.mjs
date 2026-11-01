@@ -358,7 +358,7 @@ await check("Nova's built-in tools cannot be removed from the UI", async () => {
 });
 
 // The product owns the model keys; the user never supplies one. Any screen that
-// presents our upstream as something they connected is a bug the owner called
+// presents our upstream as something they connected is a bug that was called
 // out by name — so assert the app does not say it anywhere a person can read.
 await check("the UI does not name our upstream provider", async () => {
   await page.keyboard.press("Escape").catch(() => {});

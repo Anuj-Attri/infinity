@@ -13,7 +13,7 @@ teaches the model a false fact about its own tools.
 
 This test crosses the backend/frontend boundary on purpose. The list lives in
 Python and the things it promises live in TypeScript, so neither side can check
-it alone — which is exactly why the mismatch survived. `docs/PORTING.md` states
+it alone — which is exactly why the mismatch survived. The porting rule states
 the rule; this enforces it.
 """
 
@@ -89,7 +89,7 @@ def test_blueprint_specifically_is_gone():
     from app.mcp_self import PANELS
 
     assert "blueprint" not in PANELS, (
-        "BlueprintTile is on Mark 4's dropped list; advertising it makes the "
+        "BlueprintTile was dropped; advertising it makes the "
         "model offer a panel that silently never opens."
     )
 

@@ -61,6 +61,17 @@ PUBLIC_ROUTES: dict[str, str] = {
         "Waitlist door. GET serves a page that reads a URL fragment and POSTs "
         "it so ACCESS_TOKEN never appears in proxy query-string logs; sets only "
         "the HttpOnly infinity_access cookie. No app state. See gatekeeper.",
+    "/guest/start":
+        "Creates a throwaway account for a browser tab. 404 unless "
+        "GUEST_SESSIONS=1, rate limited, and capped by GUEST_MAX_SESSIONS. The "
+        "account it creates can see nothing but its own empty state.",
+    "/guest/end":
+        "A closing page can only send a beacon, which cannot carry an "
+        "Authorization header. The token is in the body and can only schedule "
+        "deletion of its own session.",
+    "/runtime-config.js":
+        "A constant script telling the page whether guest mode is on. Reads "
+        "and writes no state.",
     # Registered as routes ONLY when ENABLE_API_DOCS=1. Listed so that turning
     # docs on does not silently widen the surface without this test noticing.
     "/openapi.json": "Opt-in only (ENABLE_API_DOCS). Publishes the full API map.",

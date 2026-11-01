@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Prove the LIVE deployment works. One command, no browser.
 
-    python scripts/verify-live.py
-    python scripts/verify-live.py --url https://staging.example.com
+    python scripts/verify-live.py --url https://your-instance.example.com
+    VERIFY_URL=https://your-instance.example.com python scripts/verify-live.py
 
 Why this exists as a committed tool rather than a thing that gets retyped:
 "is it up?" was asked many times during the first deploy and answered wrongly
@@ -32,7 +32,7 @@ import time
 import urllib.error
 import urllib.request
 
-DEFAULT_URL = "https://your-instance.example.com"
+DEFAULT_URL = ""   # pass --url or set VERIFY_URL
 REPO = pathlib.Path(__file__).resolve().parents[1]
 UA = "infinity-verify-live/1.0"
 
@@ -49,7 +49,7 @@ def load_env() -> dict[str, str]:
             if s and not s.startswith("#") and "=" in s:
                 k, v = s.split("=", 1)
                 out[k.strip()] = v.strip()
-    for k in ("ACCESS_TOKEN", "SETUP_TOKEN", "INFINITY_MASTER_PASSWORD"):
+    for k in ("ACCESS_TOKEN", "SETUP_TOKEN", "INFINITY_MASTER_PASSWORD", "VERIFY_URL"):
         if os.environ.get(k):
             out[k] = os.environ[k]
     return out
@@ -113,6 +113,10 @@ def main() -> int:
     args = ap.parse_args()
 
     env = load_env()
+    args.url = args.url or env.get("VERIFY_URL", "")
+    if not args.url:
+        print("no deployment to check: pass --url https://your-instance or set VERIFY_URL")
+        return 2
     missing = [k for k in ("ACCESS_TOKEN", "SETUP_TOKEN") if not env.get(k)]
     if missing:
         print(f"missing {', '.join(missing)} — set them in the environment or .env")

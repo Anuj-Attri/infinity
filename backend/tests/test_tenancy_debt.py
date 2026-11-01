@@ -3,7 +3,7 @@
 `test_tenancy_leak.py` is the acceptance gate for retrieval. This file is the
 inventory of everything ELSE — the surfaces that are safe today only because
 there is exactly one tenant, and that become live cross-account leaks the moment
-M3 lands.
+real accounts land.
 
 The point is that this is a RATCHET, not a note. The list is asserted exactly:
 
@@ -80,7 +80,7 @@ def test_the_unscoped_by_id_surface_is_exactly_what_was_recorded():
 
 @pytest.mark.xfail(
     strict=True,
-    reason="M3/M4: these take an account and filter by owner. When that lands "
+    reason="Planned: these take an account and filter by owner. When that lands "
            "this passes unexpectedly and the suite fails, which is the signal "
            "to delete this test and the list above.",
 )
@@ -124,8 +124,13 @@ SHARED_MUTABLE_STATE: dict[str, str] = {
         "because it remains module-level state that a second replica would not "
         "share.",
     "auth.py":
-        "_tokens — correct while auth is a single master password. Retired at "
-        "M3 by Supabase Auth.",
+        "_tokens — correct while auth is a single master password. Retired "
+        "when Supabase Auth lands.",
+    "guest.py":
+        "_sessions / _purgers — the guest token table, the same kind of thing "
+        "as auth.py's _tokens. Each entry maps a token to its own account and "
+        "is never shared. In memory on purpose, so a restart ends every guest; "
+        "a second replica would not see the first one's guests.",
     "skills_engine.py":
         "_skills — NOT a leak: read-only built-in content, identical for every "
         "user. Listed so the scan stays exhaustive rather than selective.",
@@ -137,13 +142,13 @@ SHARED_MUTABLE_STATE: dict[str, str] = {
         "_WEATHER_CACHE/_STOCK_CACHE/_MOVERS_CACHE/_HIST_CACHE/_NEWS_CACHE are "
         "keyed by city or ticker and hold public data, so a second tenant "
         "sharing them is fine. _SEARCH_CACHE and _SUMMARY_CACHE are NOT: they "
-        "are keyed by the user's own query, so at M3 one account's search text "
+        "are keyed by the user's own query, so once accounts exist one account's search text "
         "and results would be served to another account that happened to ask "
         "the same thing. Those two need an account in the key.",
     "providers/chat.py":
         "_PROVIDERS holds LIVE provider instances, and an instance carries the "
         "API key it was constructed with — so this is one set of credentials "
-        "for the whole process. Per-account OpenRouter keys (the M3 plan) "
+        "for the whole process. Per-account OpenRouter keys (the plan) "
         "cannot work until this is keyed by account. _MODEL_CACHE is only the "
         "fetched model list and is harmless to share.",
     "ratelimit.py":
@@ -157,8 +162,8 @@ SHARED_MUTABLE_STATE: dict[str, str] = {
         "because then the cache key stops being globally meaningful.",
     "mcp_stdio.py":
         "_SESSIONS/_LOCKS/_FAILED_AT — subprocess bookkeeping for the stdio "
-        "hands, which are UNMOUNTED in Mark 4 (no local machine to run them "
-        "on). Dead in practice; kept because DIRECTION.md names this module the "
+        "hands, which are UNMOUNTED (no local machine to run them "
+        "on). Dead in practice; kept because this module is the "
         "template for the M8 LSP bridge, which will need per-account sessions.",
 }
 
@@ -251,7 +256,7 @@ def _modules_with_shared_state() -> set[str]:
 
 
 def test_no_new_module_level_shared_state_appears():
-    """Every one of these becomes a cross-account leak at M3.
+    """Every one of these becomes a cross-account leak once accounts exist.
 
     Adding another is not forbidden — it is forbidden to add one SILENTLY.
     """

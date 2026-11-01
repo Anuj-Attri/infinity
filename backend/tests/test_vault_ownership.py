@@ -8,7 +8,7 @@ and the one with the most ways to be subtly wrong. Four of them:
    try would collide with a row it cannot see. They are now
    `UNIQUE(owner_account_id, ...)`, which needed a table rebuild because SQLite
    cannot drop a constraint. Slugs are ACCOUNT-LOCAL rather than org-shared:
-   the owner's instruction was that knowledge is personal for now, and it is the
+   the decision was that knowledge is personal for now, and it is the
    reversible direction — an org-shared alias layer can be added later, whereas
    narrowing a shared namespace would break every existing [[wikilink]].
 

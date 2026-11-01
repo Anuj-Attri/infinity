@@ -103,7 +103,7 @@ export default function WeatherTile() {
 
     // ONE source: our backend, then the last-good cache.
     //
-    // Mark 3 called Open-Meteo and wttr.in straight from the browser and only
+    // The desktop version called Open-Meteo and wttr.in straight from the browser and only
     // fell back to the backend. That was resilience for a local-first app whose
     // backend might be switched off. Hosted, it is backwards: it hands the
     // user's IP and city to two third parties from their own browser, the calls

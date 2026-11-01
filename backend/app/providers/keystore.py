@@ -167,7 +167,7 @@ class PlaintextKeystoreRefused(RuntimeError):
 
 # On Linux the DPAPI backend does not exist and _pick_backend() returns the
 # IDENTITY backend, which does not encrypt anything — it base64s the plaintext
-# and calls it ciphertext. Mark 3 logged a warning and carried on, which was
+# and calls it ciphertext. The desktop version logged a warning and carried on, which was
 # survivable when the only reader was one person's own laptop.
 #
 # Hosted, that path would write provider API keys in the clear onto a shared
@@ -182,12 +182,12 @@ class PlaintextKeystoreRefused(RuntimeError):
 #                     this filesystem already has the environment, where the
 #                     credentials that matter live. The UI discloses it.
 #   _save_keys_to() — a live third-party API key with money attached. REFUSED.
-#                     There is also no reason to store one: DIRECTION says we own
+#                     There is also no reason to store one: the operator owns
 #                     and pay for the key, so it comes from the environment
 #                     (OPENROUTER_API_KEY) and there is no BYOK flow to support.
 #
 # The escape hatch is explicit and named, for local Linux development where there
-# is nothing real to lose. Real key custody is M2: envelope encryption with a
+# is nothing real to lose. Real key custody is planned: envelope encryption with a
 # KMS-held key, at which point this whole module is replaced.
 _ALLOW_PLAINTEXT = os.environ.get("ALLOW_PLAINTEXT_KEYSTORE") == "1"
 

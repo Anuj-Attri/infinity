@@ -26,7 +26,7 @@ TOKEN = "door-key-for-tests"
 def locked(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ACCESS_TOKEN", TOKEN)
-    monkeypatch.delenv("MARK4_DEV_ACCOUNT", raising=False)
+    monkeypatch.delenv("INFINITY_DEV_ACCOUNT", raising=False)
     monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
     import app.paths, app.auth, app.ratelimit, app.gatekeeper, app.main
     importlib.reload(app.paths); importlib.reload(app.auth)
@@ -65,7 +65,7 @@ def test_every_api_path_is_invisible_without_the_key(locked, path):
 
 
 def test_a_person_landing_on_the_root_is_sent_to_the_door(locked):
-    """The failure that prompted this: the owner opened their own deployment in
+    """The failure that prompted this: an operator opened their own deployment in
     a browser and got a raw JSON 404 with no way forward.
 
     404-for-everything is still right for API paths — a stranger probing them
@@ -173,7 +173,7 @@ def test_secure_cookie_when_proxy_says_https(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ACCESS_TOKEN", TOKEN)
     monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
-    monkeypatch.delenv("MARK4_DEV_ACCOUNT", raising=False)
+    monkeypatch.delenv("INFINITY_DEV_ACCOUNT", raising=False)
     import app.paths, app.auth, app.ratelimit, app.gatekeeper, app.main
     importlib.reload(app.paths); importlib.reload(app.auth)
     importlib.reload(app.ratelimit)

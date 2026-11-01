@@ -1,6 +1,6 @@
 # Runtime deps for the lifted backend.
 #
-# Three of these were NEVER DECLARED in Mark 3 and were only present because
+# Three of these were NEVER DECLARED in the desktop version and were only present because
 # they happened to be in the dev venv. In a clean container the modules that
 # import them fail at request time, not at build time:
 #   beautifulsoup4 + lxml -> browse.py (a MOUNTED route)
@@ -13,7 +13,7 @@ pydantic==2.10.4
 python-dotenv==1.0.1
 httpx==0.28.1
 
-# Auth (master password, replaced by Supabase Auth at M3)
+# Auth (master password, replaced by Supabase Auth later)
 bcrypt>=4.0
 
 # Uploads
@@ -26,11 +26,11 @@ python-docx>=1.1
 openpyxl>=3.1
 python-pptx>=0.6
 
-# Server-side browsing — browse.py. UNDECLARED IN MARK 3.
+# Server-side browsing — browse.py. UNDECLARED IN THE DESKTOP VERSION.
 beautifulsoup4>=4.12
 lxml>=5.0
 
-# Scanned-PDF OCR fallback — ocr.py. UNDECLARED IN MARK 3.
+# Scanned-PDF OCR fallback — ocr.py. UNDECLARED IN THE DESKTOP VERSION.
 # VLM-based (renders pages, asks the vision model). No tesseract binary needed.
 PyMuPDF>=1.24
 Pillow>=10.0
@@ -42,14 +42,14 @@ numpy>=1.24
 yfinance>=0.2.40
 
 # Error reporting. Inert until SENTRY_DSN is set; scrubbing in app/observability.py
-# is configured and tested first, which MARK4.md makes a gate rather than a habit.
+# is configured and tested first, as a gate rather than a habit.
 sentry-sdk[fastapi]>=2.19
 
 # Accurate token accounting for the context budget. context_budget.py falls
 # back to chars//4 without it, which silently mis-budgets long contexts.
 tiktoken>=0.8
 
-# M3+ (uncomment as milestones land)
+# Planned (uncomment as features land)
 # supabase==2.11.0
 # asyncpg==0.30.0
 # pgvector==0.3.6

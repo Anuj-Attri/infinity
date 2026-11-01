@@ -1,22 +1,15 @@
 // Thin HTTP wrapper around the FastAPI backend.
 //
-// Mark 3 resolved this four ways — packaged Tauri, dev Tauri, Capacitor, and
-// browser — because it shipped as a desktop app, an Android app, and a page,
-// all pointed at one machine on a Tailscale network. Mark 4 is a web app
-// talking to a hosted backend, so there is exactly one question: which origin?
+// One question decides where requests go: which origin?
 //
-//   VITE_API_BASE_URL   explicit, and what production always sets.
-//   (unset)             http://127.0.0.1:8787 — local dev against a local API.
+//   VITE_API_BASE_URL   explicit, and what a separately hosted frontend sets.
+//   (unset, prod build) the page's own origin, because the backend serves it.
+//   (unset, dev server) http://127.0.0.1:8787, a local API.
 //
-// The old fallback was a hardcoded Tailscale IP over plain http. That is gone
-// for three reasons: the tailnet is not part of this architecture any more; a
-// baked-in IP is not deployable; and a plain-http origin has no secure context,
-// which silently removes navigator.clipboard, getUserMedia and SpeechRecognition.
-// 8787, NOT 8000. Mark 3 runs an always-on backend on 8000 via the
-// "InfinityBackend" scheduled task, and MARK4.md says Mark 3 stays running and
-// untouched. Sharing the port means whichever process bound first answers, so a
-// local test silently talks to the WRONG APP — which happened, and briefly
-// looked like a Mark 4 security bug.
+// Never a hardcoded IP over plain http: a plain-http origin has no secure
+// context, which silently removes navigator.clipboard, getUserMedia and
+// SpeechRecognition.
+
 const DEV_FALLBACK_URL = "http://127.0.0.1:8787";
 
 function resolveBackendBase(): string {
@@ -86,6 +79,17 @@ async function apiFetch(
   return res;
 }
 
+/** An Error carrying the server's own explanation when it gave one, so a
+ *  refusal such as "Not available in a guest session." reaches the user
+ *  instead of a bare status code. */
+async function httpError(r: Response, label: string): Promise<Error> {
+  try {
+    const b = await r.json();
+    if (b?.detail && typeof b.detail === "string") return new Error(b.detail);
+  } catch { /* not JSON */ }
+  return new Error(`${label} ${r.status}`);
+}
+
 // ── Auth bootstrap endpoints (use raw fetch — must work with no token,
 // and a 401 here is an expected login failure, not a session expiry) ──
 
@@ -96,6 +100,8 @@ export type AuthStatus = {
   setup_token_required?: boolean;
   /** False when first-run setup is disabled entirely for this caller. */
   setup_available?: boolean;
+  /** True when this instance runs throwaway guest sessions instead of sign-in. */
+  guest_mode?: boolean;
 };
 export type AuthDevice = {
   id: string;
@@ -194,6 +200,27 @@ export async function revokeAuthDevice(id: string): Promise<{ ok: boolean; self_
 
 export async function authLogout(): Promise<void> {
   await apiFetch(`${BASE}/auth/logout`, { method: "POST" });
+}
+
+/** Start a throwaway guest session. Raw fetch: there is no token yet. */
+export async function guestStart(): Promise<{ token: string; idle_minutes: number }> {
+  const r = await fetch(`${BASE}/guest/start`, { method: "POST" });
+  if (!r.ok) {
+    let detail = `Could not start a session (${r.status})`;
+    try { const b = await r.json(); if (b?.detail) detail = String(b.detail); } catch {}
+    throw new Error(detail);
+  }
+  return r.json();
+}
+
+/** Tell the server this tab is closing. A beacon is the only request a
+ *  browser reliably lets a closing page send, and it cannot carry headers, so
+ *  the token goes in the body. Best-effort: the server's idle sweep deletes
+ *  the session anyway if this never arrives. */
+export function guestEndBeacon(token: string): void {
+  try {
+    navigator.sendBeacon(`${BASE}/guest/end`, new Blob([token], { type: "text/plain" }));
+  } catch { /* the idle sweep is the guarantee */ }
 }
 
 export async function authReset(): Promise<void> {
@@ -295,7 +322,7 @@ export async function getRagDocs(): Promise<{ docs: Array<{ source: string; doc_
 // Wipes the doc_chunks table ONLY — Nova's memories + session_overview are
 // untouched (separate namespaces). Destructive + irreversible. Returns the
 // chunk count removed. Routed via apiFetch (Bearer + resolved backend base) so
-// it works over the tailnet from phone/laptop too, like every other RAG call.
+// it reaches the right backend from any device, like every other call.
 export async function clearRagDocs(): Promise<{ ok: boolean; removed: number }> {
   const r = await apiFetch(`${BASE}/rag/docs`, { method: "DELETE" });
   if (!r.ok) throw new Error(`rag/docs clear ${r.status}`);
@@ -321,10 +348,8 @@ export async function ragIngest(name: string, text: string): Promise<{
 // ── Code tile filesystem (/fs) ────────────────────────────────────────────
 // Go through apiFetch like every other endpoint, so the device Bearer token is
 // attached (the /fs routes are behind require_auth) AND the correct backend base
-// is used (resolveBackendBase — loopback on desktop, the home backend over the
-// tailnet on the packaged/phone builds). The Code tile previously used a raw
-// fetch() to a hardcoded 127.0.0.1, so once the auth gate landed every /fs call
-// 401'd → "Failed to fetch" in the WebView.
+// is used (resolveBackendBase). The Code tile previously used a raw fetch() to a
+// hardcoded 127.0.0.1, so once the auth gate landed every /fs call 401'd.
 // `path` is optional and omitting it lists the workspace root, which is the
 // normal case: the backend confines every /fs call to one workspace directory,
 // so there is no longer a root for the caller to choose. A path may still be
@@ -821,7 +846,7 @@ export async function fetchAnimatePlayableUrl(path: string): Promise<string> {
   return `${BASE}${j.url}`;
 }
 
-// Android self-update: manifest + APK from the home backend (tailnet, authed).
+// Android self-update: manifest + APK from the backend (authed).
 export type AndroidUpdate = { versionCode: number | null; versionName?: string; file?: string; notes?: string };
 export async function getAndroidUpdate(): Promise<AndroidUpdate> {
   try {
@@ -1412,7 +1437,7 @@ export type SpendSummary = {
 
 export async function getSpendSummary(): Promise<SpendSummary> {
   const r = await apiFetch(`${BASE}/spend/summary`);
-  if (!r.ok) throw new Error(`spend/summary ${r.status}`);
+  if (!r.ok) throw await httpError(r, "spend/summary");
   return (await r.json()) as SpendSummary;
 }
 
@@ -1539,7 +1564,7 @@ export type Diagnostics = {
 
 export async function getDiagnostics(): Promise<Diagnostics> {
   const r = await apiFetch(`${BASE}/admin/diagnostics`);
-  if (!r.ok) throw new Error(`diagnostics ${r.status}`);
+  if (!r.ok) throw await httpError(r, "diagnostics");
   return r.json();
 }
 
@@ -1586,7 +1611,7 @@ export type UsageAll = {
 
 export async function getUsageAll(): Promise<UsageAll> {
   const r = await apiFetch(`${BASE}/usage/all`);
-  if (!r.ok) throw new Error(`usage ${r.status}`);
+  if (!r.ok) throw await httpError(r, "usage");
   return r.json();
 }
 

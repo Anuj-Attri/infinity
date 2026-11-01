@@ -298,7 +298,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
                   which was true of the desktop build and is false here: memories
                   live in the server's database and are sent to the model as
                   context on the turns that retrieve them. A privacy claim the
-                  product cannot keep is worse than no claim, and DIRECTION.md
+                  product cannot keep is worse than no claim, and the product rules
                   makes not overstating this a rule. */}
               {memoryEnabled
                 ? "Nova retrieves relevant memories silently on each turn. Stored on the server for your account, and included in the model request when they are used."
@@ -677,7 +677,7 @@ function ChatProviderRow({
 
 
 // ── Profile ──────────────────────────────────────────────────────────────────
-// The name Nova uses. This was a constant in the backend persona ("when the user is
+// The name Nova uses. This was a hardcoded constant in the backend persona
 // wrong…"), which meant the app addressed everyone as its author. Now it is
 // per-account state, and blank is a valid answer — the persona has a neutral
 // form and uses it rather than inventing a name.
@@ -875,7 +875,7 @@ function DevicesSection({ open }: { open: boolean }) {
       </ul>
 
       {/* "Provision a device" lived here — it minted a long-lived token to paste
-          into an "Eye node", a Mark 3 concept that has no counterpart in a
+          into an "Eye node", a desktop-only concept that has no counterpart in a
           hosted build. It was also the one control in Settings that could hand
           out a durable credential, which is not something to leave lying around
           in a product about to have real accounts. The /auth/issue route stays

@@ -1,13 +1,13 @@
 """The consent gate — the firewall between the model and anything that acts.
 
-Ported from Mark 3's `test_mcp_gate.py`. The gate code itself came across
-verbatim (AGENTS.md: "ports verbatim and is never softened") but its tests did
+Ported from the desktop version's `test_mcp_gate.py`. The gate code itself came across
+verbatim, and is never softened, but its tests did
 not, so the one invariant the repo says most loudly about itself was the one
 with nothing holding it. A future edit that widened the read-name pattern,
 dropped the internal-transport short-circuit, or flipped the fail-closed default
 would have shipped green.
 
-Two of Mark 3's eleven tests drove `mcp_shell`, which is deliberately gone —
+Two of the desktop version's eleven tests drove `mcp_shell`, which is deliberately gone —
 there is no local machine to run commands on. The remaining nine are the gate
 itself, and the fixture is repointed at `mcp_self`, the internal hand that
 survived. It is a strictly better subject anyway: `mcp_self` is `internal`
@@ -119,7 +119,7 @@ def test_untrusted_server_is_blocked(monkeypatch):
 # ── the hand itself ──────────────────────────────────────────────────────────
 
 def test_the_self_hand_rejects_an_unknown_panel():
-    """Replaces Mark 3's two shell tests, which needed the dropped hand.
+    """Replaces the desktop version's two shell tests, which needed the dropped hand.
 
     Same shape: the hand validates its own arguments rather than trusting them.
     """

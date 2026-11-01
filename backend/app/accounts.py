@@ -1,18 +1,18 @@
 """Account ownership — the one seam every piece of state hangs off.
 
-STANDING INVARIANT (DIRECTION.md):
+STANDING INVARIANT:
     Every piece of state belongs to exactly one account. No global singletons.
     Any function that reads or writes state takes an explicit account.
     If you cannot name the owner of a row, the schema is wrong.
 
-DIFFERENCE FROM MARK 3 — THIS ONE FAILS CLOSED.
-Mark 3 returned a single hardcoded local account, which was correct for a
+DIFFERENCE FROM THE DESKTOP VERSION — THIS ONE FAILS CLOSED.
+The desktop version returned a single hardcoded local account, which was correct for a
 single-user desktop app and fatal for a hosted one. Here, an unauthenticated
-request raises. The dev escape hatch exists so M0/M1 can be built before auth
+request raises. The dev escape hatch exists so early development can be built before auth
 lands, but it is gated on an explicit env var that must never be set in
 production — a missing session must never silently resolve to "somebody".
 
-SCOPES (DIRECTION.md "THREE SCOPES") — knowledge is personal | department |
+SCOPES: knowledge is personal | department |
 company, the OneDrive mental model, because every buyer already understands it.
 Personal scope is sealed under a key an org admin key cannot open: the privacy
 guarantee is KEY CUSTODY, not physical location.
@@ -24,6 +24,8 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+
+from starlette.requests import Request
 
 
 class Scope(str, Enum):
@@ -52,7 +54,7 @@ class Account:
     email: str | None = None
     # Departments this account belongs to. Drives Scope.DEPARTMENT retrieval.
     department_ids: tuple[str, ...] = ()
-    # Set by the entitlement check (M6). Deny-by-default: any turn that costs
+    # Set by the entitlement check  Deny-by-default: any turn that costs
     # money confirms this first, inside the auth dependency chain — never via a
     # cron-flipped flag, because cron fails silently and gives the product away.
     entitled: bool = True
@@ -70,9 +72,9 @@ class Account:
         return scope in self.scopes
 
 
-# Dev-only account for M0/M1, before Supabase Auth is wired. Gated so it cannot
-# reach production: MARK4_DEV_ACCOUNT must be explicitly set to "1".
-_DEV_ENABLED = os.environ.get("MARK4_DEV_ACCOUNT") == "1"
+# Dev-only account for early development, before Supabase Auth is wired. Gated so it cannot
+# reach production: INFINITY_DEV_ACCOUNT must be explicitly set to "1".
+_DEV_ENABLED = os.environ.get("INFINITY_DEV_ACCOUNT") == "1"
 DEV_ACCOUNT = Account(
     id="00000000-0000-0000-0000-000000000001",
     org_id="00000000-0000-0000-0000-0000000000a1",
@@ -95,16 +97,36 @@ SINGLE_TENANT = Account(
 )
 
 
+def bearer_token(request: Any) -> str:
+    raw = request.headers.get("authorization") or ""
+    if raw[:7].lower() == "bearer ":
+        return raw[7:].strip()
+    return ""
+
+
+def account_id_for(request: Request) -> str:
+    """FastAPI dependency: whose state this request touches.
+
+    A guest token names its own throwaway account. Anything else reaching a
+    route has already passed the app-wide auth gate with the owner's device
+    token, so it is the single tenant. Taken as a dependency, never read off
+    the query string, so a caller cannot name the account they want.
+    """
+    from . import guest
+    g = guest.lookup(bearer_token(request))
+    return g.id if g is not None else SINGLE_TENANT.id
+
+
 async def resolve_account(request: Any = None) -> Account:
     """Resolve the caller to exactly one account, or raise.
 
-    THIS IS THE SWAP POINT. When Supabase Auth lands (M3) this verifies the
+    THIS IS THE SWAP POINT. When Supabase Auth lands  this verifies the
     session JWT, looks the row up in OUR `accounts` table by `external_auth_id`
     (the provider's id lives in that column and nowhere else, so the provider
     stays swappable — Supabase now, WorkOS when SSO/SCIM is needed), and returns
     it. Everything downstream already takes an Account, so nothing else changes.
 
-    Order per DIRECTION: authenticate -> resolve account -> check entitlement ->
+    Order: authenticate -> resolve account -> check entitlement ->
     run.
 
     UNTIL THEN, a request with a VERIFIED master-password session resolves to
@@ -113,21 +135,20 @@ async def resolve_account(request: Any = None) -> Account:
     pretending there is no owner. A request with NO verified session still
     raises — a missing session must never resolve to somebody.
     """
-    # --- M3 replaces this block -------------------------------------------
+    # --- real accounts replace this block ---
     if _DEV_ENABLED:
         return DEV_ACCOUNT
 
     if request is not None:
         from . import auth as auth_layer
-        token = ""
-        try:
-            raw = request.headers.get("authorization") or ""
-            if raw.lower().startswith("bearer "):
-                token = raw[7:].strip()
-        except Exception:
-            token = ""
-        if token and auth_layer.verify_token(token) is not None:
-            return SINGLE_TENANT
+        from . import guest
+        token = bearer_token(request)
+        if token:
+            g = guest.lookup(token)
+            if g is not None:
+                return g
+            if auth_layer.verify_token(token) is not None:
+                return SINGLE_TENANT
 
     raise NotAuthenticated("No verified session on this request.")
 

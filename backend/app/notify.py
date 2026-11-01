@@ -14,8 +14,8 @@ gets through. Two tiers:
     be annoyed?"), a rolling rate cap, and a quiet-hours window. Default is
     SILENCE. Never fire on a timer or a vibe — only on real signal.
 
-Delivery is tailnet-native, NOT Firebase: the backend queues here and the
-phone drains the queue over the tailnet (poll while foreground, drain on
+Delivery is pull-based, NOT Firebase: the backend queues here and the
+client drains the queue (poll while foreground, drain on
 resume) and raises a local notification. No cloud dependency, no new spend.
 The trade-off: a fully-killed app won't wake until it next runs — acceptable
 for a single-user personal tool, and the stated verify case (backgrounded)

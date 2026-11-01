@@ -7,7 +7,7 @@ Modules:
     runtime   — the DAG executor: generator→evaluator loops, retries,
                 distillation, synthesis. Consumes the dispatch registry.
 
-Design rules honored (see docs/RUN-2026-07-02.md):
+Design rules:
   * Two-registry separation intact — runtime dispatches ONLY via
     app.providers.dispatch; synthesis/planning ONLY via the chat registry.
   * Fail-closed: bad plan → no dispatch; node failures isolate; whole

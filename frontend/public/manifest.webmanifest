@@ -1,0 +1,13 @@
+{
+  "name": "Infinity",
+  "short_name": "Infinity",
+  "description": "An AI workspace that cites its sources.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#221a45",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

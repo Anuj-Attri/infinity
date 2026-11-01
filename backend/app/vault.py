@@ -19,7 +19,7 @@ of sprawling) and auto-linked to its nearest neighbors (local
 embeddings). Retrieval is hybrid: vector + FTS keyword + 1-hop graph
 expansion, fused by reciprocal rank.
 
-Sovereignty: files local, embeddings pending (M5: Voyage voyage-4, 1024-dim, pgvector),
+Sovereignty: files local, embeddings pending (Voyage voyage-4, 1024-dim, pgvector),
 index local. Only /vault/query's final synthesis touches the chat lane,
 and only with the retrieved chunks.
 """
@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from .paths import data_path
 
@@ -55,7 +55,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # banner and the operator console both reported storage as persistent.
 #
 # data_path() is the single answer to "where does state go"; nothing may compute
-# its own. docs/PORTING.md names this; skills_engine.py had the same bug once.
+# its own. skills_engine.py had the same bug once.
 _VAULT_ROOT = Path(os.environ.get("VAULT_DIR") or data_path("vault"))
 
 
@@ -232,8 +232,8 @@ def _migrate_ownership(db: sqlite3.Connection) -> None:
     same thing, and the second one to try would get a constraint error from
     somebody else's data.
 
-    SLUGS ARE ACCOUNT-LOCAL, not org-shared. DIRECTION.md's answer to "who can
-    see this" is scope, and the owner's instruction was that knowledge is
+    SLUGS ARE ACCOUNT-LOCAL, not org-shared. The answer to "who can
+    see this" is scope, and the decision was that knowledge is
     personal for now. It is also the reversible direction: an org-shared alias
     layer can be added on top later, whereas narrowing a shared namespace would
     break every existing [[wikilink]].
@@ -376,26 +376,34 @@ def _db() -> sqlite3.Connection:
     return _conn
 
 
-def _account_id() -> str:
-    """Whose vault this request touches.
+def _account_id_dep(request: Request) -> str:
+    """Whose vault this request touches. A dependency, never a query parameter,
+    so a caller cannot name the account whose vault they want to read."""
+    from .accounts import account_id_for
+    return account_id_for(request)
 
-    One tenant today, and the app-level auth dependency has already verified the
-    session before any route runs. A function rather than a constant so that
-    when identity lands this becomes a request dependency and every call site is
-    already asking the right question.
+
+def purge_account(account_id: str) -> int:
+    """Delete one account's whole vault: rows, keyword index, cache and files.
+
+    Used when a guest session ends. The note directory goes too, because the
+    files are the source of truth and the next scan() would re-index them.
     """
-    from .accounts import SINGLE_TENANT
-    return SINGLE_TENANT.id
-
-
-def _account_id_dep() -> str:
-    """FastAPI-dependency form of _account_id().
-
-    A dependency rather than a keyword-only argument because FastAPI would read
-    a bare `account_id: str` off the QUERY STRING — letting the caller name the
-    account whose vault they wanted to read, which is the opposite of the point.
-    """
-    return _account_id()
+    with _LOCK:
+        db = _db()
+        n = 0
+        for table in ("chunks", "edges", "nodes"):
+            n += db.execute(f"DELETE FROM {table} WHERE owner_account_id=?",
+                            (account_id,)).rowcount
+        if _fts_ok:
+            db.execute("DELETE FROM fts WHERE owner_account_id=?", (account_id,))
+        db.commit()
+    _vec_cache.pop(account_id, None)
+    d = _VAULT_ROOT / account_id
+    if d.exists():
+        import shutil
+        shutil.rmtree(d)
+    return n
 
 
 def _mark_dirty() -> None:
@@ -1123,7 +1131,7 @@ async def vault_ingest_file(file: UploadFile = File(...),
                 "captioned": bool(caption)}
 
     if ext in _AUD_EXTS:
-        # Voice/Whisper was deliberately dropped in Mark 4 (no local model
+        # Voice/Whisper was deliberately dropped (no local model
         # lane), but this branch survived the cut and still imported it. The
         # import raised ModuleNotFoundError, which the app-level handler turned
         # into an opaque 500 — while the Vault tile's file picker went on

@@ -21,11 +21,31 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
   if (phase === "unreachable") return <UnreachableScreen />;
   if (phase === "setup") return <SetupScreen />;
   if (phase === "login") return <LoginScreen />;
-  return <>{children}</>;
+  return <>{children}<GuestNotice /></>;
+}
+
+/** Always visible in a guest session, so nobody mistakes a public instance
+ *  for somewhere their work is kept. */
+function GuestNotice() {
+  const { guest, logout } = useAuth();
+  const [busy, setBusy] = useState(false);
+  if (!guest) return null;
+  return (
+    <div className="guest-notice" role="status">
+      <span>Guest session. Everything here is deleted when you close this tab.</span>
+      <button
+        className="guest-notice-btn"
+        disabled={busy}
+        onClick={async () => { setBusy(true); await logout(); }}
+      >
+        {busy ? "Clearing…" : "Clear now"}
+      </button>
+    </div>
+  );
 }
 
 function UnreachableScreen() {
-  const { refresh } = useAuth();
+  const { refresh, guestError } = useAuth();
   const [busy, setBusy] = useState(false);
 
   const retry = async () => {
@@ -38,9 +58,11 @@ function UnreachableScreen() {
     <div className="authgate">
       <div className="authgate-card">
         <div className="authgate-mark">∞</div>
-        <h1 className="authgate-title">Cannot reach backend.</h1>
+        <h1 className="authgate-title">
+          {guestError ? "Could not start a session." : "Cannot reach the server."}
+        </h1>
         <p className="authgate-sub">
-          Make sure Tailscale is connected and your home machine is awake.
+          {guestError ?? "Check your connection and try again. If you run this instance yourself, make sure the backend is running."}
         </p>
         <button className="authgate-btn" onClick={retry} disabled={busy}>
           {busy ? "Retrying…" : "Retry"}

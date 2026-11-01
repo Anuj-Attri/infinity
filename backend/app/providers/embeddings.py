@@ -21,7 +21,7 @@ THE FAILURE MODE THIS FILE EXISTS TO PREVENT is not "no embeddings". It is
 
 Both are silent-corruption bugs, which is the class this codebase treats as
 worse than a crash: a crash gets fixed, a confident wrong answer gets believed.
-DIRECTION.md's first law — every claim carries a source — is worth nothing if
+The first product rule, every claim carries a source, is worth nothing if
 the retrieval that found the source was noise.
 
 CONFIGURATION. `VOYAGE_API_KEY` enables the Voyage provider. Nothing else is
@@ -40,7 +40,7 @@ from typing import Literal
 import httpx
 import numpy as np
 
-# The decision on record (AGENTS.md, docs/MARK4.md): Voyage voyage-4 at 1024
+# The decision on record: Voyage voyage-4 at 1024
 # dimensions, frozen. Overridable by env ONLY so a migration can be staged
 # without a code change — changing either invalidates every stored vector, which
 # is why `embedding_model` and `dim` are written alongside them.

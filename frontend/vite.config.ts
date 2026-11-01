@@ -19,7 +19,7 @@ export default defineConfig({
   },
 
   build: {
-    // Mark 3 shipped ONE 1.72 MB chunk. That was invisible on a desktop app and
+    // The desktop version shipped ONE 1.72 MB chunk. That was invisible on a desktop app and
     // is a multi-second blank screen on the web, which is what this is now.
     // Splitting the big, rarely-first-needed libraries out means the shell can
     // paint before they arrive.
@@ -42,7 +42,7 @@ export default defineConfig({
         },
       },
     },
-    // The default is 500 kB and Mark 3 blew past it silently. Keep the warning
+    // The default is 500 kB and the desktop version blew past it silently. Keep the warning
     // meaningful rather than raising it until it stops complaining.
     chunkSizeWarningLimit: 700,
   },

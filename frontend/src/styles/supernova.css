@@ -735,7 +735,7 @@ button { font-family: inherit; color: inherit; }
    as a scroll and fires pointercancel, so the pan/pinch handler receives a
    pointerdown, one move, and then nothing. That is not a missing listener and
    it looks exactly like one — the canvas simply never moves under a finger.
-   Mark 3 got this right on `.mcanvas`, its mobile canvas; that rule came across
+   The desktop version got this right on `.mcanvas`, its mobile canvas; that rule came across
    with the stylesheet but `.mcanvas` is never rendered here, so the real canvas
    was left on the default. */
 .dash-canvas { touch-action: none; }
@@ -2078,7 +2078,7 @@ button { font-family: inherit; color: inherit; }
   text-align: center; font: italic 400 12.5px var(--font-display); color: var(--ink-3);
 }
 
-/* ── Deep-dive sheet (the REAL tile, fullscreen) — the user's favourite ────── */
+/* ── Deep-dive sheet (the REAL tile, fullscreen) ───────────────────────── */
 .inf-sheet {
   position: fixed; inset: 0; z-index: 60;
   height: 100vh; height: 100dvh;             /* keyboard/URL-bar aware */
@@ -3891,7 +3891,7 @@ button { font-family: inherit; color: inherit; }
 
 /* ─── Command palette (Ctrl+K) — theme-aware ─────────────────────
    Was hardcoded `background: #fff`, which is why a white panel appeared in
-   the dark app (PUNCHLIST A2). Surfaces now read the same tokens every other
+   the dark app. Surfaces now read the same tokens every other
    panel uses (cf. .settings-panel), so the palette follows light AND dark. */
 .palette-overlay {
   position: fixed; inset: 0;
@@ -6141,3 +6141,35 @@ option { color: #111; background: #fff; }
 .tbrowser-content th,
 .tbrowser-content td { border: 1px solid var(--hairline); padding: 6px 9px; text-align: left; }
 .tbrowser-content hr { border: 0; border-top: 1px solid var(--hairline-soft); margin: 1.4em 0; }
+
+/* Guest session notice. Fixed to the viewport, outside the canvas, so it
+   never pans away. Tokens only: it must read in both themes. */
+.guest-notice {
+  position: fixed;
+  left: 50%;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 32px);
+  padding: 8px 10px 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--bg-soft);
+  color: var(--ink-1);
+  font-size: 12.5px;
+  box-shadow: var(--tile-hover-shadow);
+}
+.guest-notice-btn {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline-strong);
+  background: transparent;
+  color: var(--ink-0);
+  font: inherit;
+  cursor: pointer;
+}
+.guest-notice-btn:disabled { opacity: 0.55; cursor: default; }

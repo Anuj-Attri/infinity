@@ -1,6 +1,6 @@
 """Who the account holder is, in their own words.
 
-Nova's persona used to name one person in a module constant: "When the user is
+Nova's persona used to name one person in a module constant: "When <name> is
 wrong, impulsive, or hand-waving, you say so." That is fine for an app with one
 user and wrong for one with accounts — the second person to sign in would have
 been addressed by the first person's name, in every reply, with no way to change
@@ -15,7 +15,7 @@ Deliberately NOT sourced from an env var. `OWNER_NAME` would have been one line
 and would have re-created the same bug one layer down — a single global name for
 a deployment that is about to have many accounts.
 
-At M4 this becomes a column on `accounts`; at M3 the name can come from the
+Later this becomes a column on `accounts`, and the name can come from the
 identity provider's profile. Both are the same shape as what is here, which is
 the point: `display_name(account_id)` does not change when the storage does.
 """
@@ -102,3 +102,10 @@ def set_display_name(account_id: str, name: str | None) -> str:
         raw.pop(account_id, None)
     _write(raw)
     return cleaned
+
+
+def forget(account_id: str) -> None:
+    """Remove everything stored for this account."""
+    raw = _read()
+    if raw.pop(account_id, None) is not None:
+        _write(raw)

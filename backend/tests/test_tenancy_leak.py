@@ -1,9 +1,9 @@
 """THE LEAK TEST — account B must never retrieve account A's document.
 
-This file is written to FAIL. That is its job, and M5's definition of done is
+This file is written to FAIL. That is its job, and the retrieval work's definition of done is
 "this file passes."
 
-DIRECTION.md calls it "the single most valuable artifact for an investor
+It is "the single most valuable artifact for an investor
 conversation." For a product whose entire pitch is access control, the untested
 surface IS the product — so the target gets written before the thing that
 satisfies it.
@@ -72,7 +72,7 @@ def test_retrieve_requires_an_account_keyword_only():
 # 2. The leak itself.
 # --------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="M5: pgvector retrieval not implemented yet.")
+@pytest.mark.xfail(strict=True, reason="Planned: pgvector retrieval not implemented yet.")
 def test_account_b_cannot_retrieve_account_a_document():
     """Bob must not retrieve Alice's personal document through ANY query.
 
@@ -85,7 +85,7 @@ def test_account_b_cannot_retrieve_account_a_document():
     assert not leaked, f"LEAK: Bob retrieved Alice's personal document: {leaked}"
 
 
-@pytest.mark.xfail(strict=True, reason="M5: cross-org isolation not implemented yet.")
+@pytest.mark.xfail(strict=True, reason="Planned: cross-org isolation not implemented yet.")
 def test_cross_org_account_retrieves_nothing():
     """Mallory is in another company. She sees nothing of Acme's, ever."""
     _run(retrieval.ingest_text(SECRET, account=ALICE, scope=Scope.COMPANY))
@@ -93,7 +93,7 @@ def test_cross_org_account_retrieves_nothing():
     assert not hits, f"BREACH: cross-org retrieval returned {len(hits)} chunks"
 
 
-@pytest.mark.xfail(strict=True, reason="M5: personal-scope key custody not implemented.")
+@pytest.mark.xfail(strict=True, reason="Planned: personal-scope key custody not implemented.")
 def test_personal_scope_is_not_readable_by_the_org():
     """An org admin key must not open a personal-scope row.
 
@@ -110,7 +110,7 @@ def test_personal_scope_is_not_readable_by_the_org():
 # 3. The guard that keeps the leak tests honest.
 # --------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="M5: depends on the same retrieval as above.")
+@pytest.mark.xfail(strict=True, reason="Planned: depends on the same retrieval as above.")
 def test_owner_can_still_retrieve_their_own_document():
     """Alice CAN read her own document.
 
@@ -127,7 +127,7 @@ def test_owner_can_still_retrieve_their_own_document():
 # 4. Laws #1 and #3, as tests rather than prose.
 # --------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="M4: citations not wired yet.")
+@pytest.mark.xfail(strict=True, reason="Planned: citations not wired yet.")
 def test_every_answer_carries_a_source():
     """Law #1: an answer without a source is a bug."""
     from app import orchestrator
@@ -136,7 +136,7 @@ def test_every_answer_carries_a_source():
     assert getattr(result, "citations", None), "No citations — violates law #1."
 
 
-@pytest.mark.xfail(strict=True, reason="M4: refusal path not wired yet.")
+@pytest.mark.xfail(strict=True, reason="Planned: refusal path not wired yet.")
 def test_no_retrieval_means_refusal_not_fabrication():
     """Law #3: refusal beats fabrication.
 

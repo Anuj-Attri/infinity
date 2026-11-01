@@ -1,11 +1,9 @@
 """The outermost lock: nothing is publicly reachable before accounts exist.
 
-Owner's instruction, and it is the right one: **do not make anything publicly
-reachable until security and accounts are wired.** Right now the app has a
-single master password and no account layer at all — every piece of state is
-shared, and four routes address resources by id without asking who is asking
-(see tests/test_tenancy_debt.py). That is a fine shape for one person and not
-something to leave open on the internet.
+An instance with a single owner should not be reachable by strangers. The
+owner's state is the instance's state, so the default is closed: nothing is
+served to a non-local caller unless the operator has set ACCESS_TOKEN, or has
+deliberately opened the instance with ALLOW_PUBLIC=1 or GUEST_SESSIONS=1.
 
 So the whole deployment sits behind a pre-shared key. `ACCESS_TOKEN` is not
 authentication — it does not identify anyone and it is not a substitute for the
@@ -29,7 +27,7 @@ on loopback is not the threat. That does mean a deployment is open until the
 variable is set, which is why the operator console reports it in red and the
 runbook lists it first.
 
-THIS COMES OUT AT M3. When Supabase Auth and the account layer land, real
+THIS COMES OUT WHEN ACCOUNTS LAND. When Supabase Auth and the account layer land, real
 identity replaces a shared secret. A single key that everyone with the link
 holds is exactly the thing this product exists to replace — keeping it after
 that point would be embarrassing.
@@ -199,6 +197,17 @@ def is_locked() -> bool:
     return bool(_token())
 
 
+def is_public() -> bool:
+    """True when the operator has deliberately opened the instance to anyone.
+
+    ALLOW_PUBLIC=1 says so outright. GUEST_SESSIONS=1 implies it: a guest site
+    exists to be reached by strangers, and each of them gets a throwaway
+    account rather than the owner's. Neither is ever the default.
+    """
+    return (os.environ.get("ALLOW_PUBLIC") == "1"
+            or os.environ.get("GUEST_SESSIONS") == "1")
+
+
 def _matches(supplied: str, expected: str) -> bool:
     """Length-constant compare: hash both sides, then compare digests.
 
@@ -293,7 +302,7 @@ async def middleware(request: Request, call_next):
     # development still needs zero configuration; a hosted deploy that has not
     # been configured is inert rather than exposed.
     if not expected:
-        if _is_loopback(request):
+        if _is_loopback(request) or is_public():
             return await call_next(request)
         return _deny()
 
@@ -311,7 +320,7 @@ async def middleware(request: Request, call_next):
         # 404-for-everything was the original rule and it is still right for API
         # paths: a stranger probing /vault/stats or /admin/diagnostics learns
         # nothing, so the surface cannot be enumerated. But applying it to "/"
-        # meant the owner opened their own deployment and got a raw JSON 404
+        # meant an operator opening their own deployment got a raw JSON 404
         # with no way forward — the failure that made this change necessary.
         #
         # The redirect discloses exactly one thing: a gated app lives here. That

@@ -5,7 +5,7 @@ If the caller cannot see the document, the model never saw it.
 
 That "at retrieval" is the whole design. Filtering after generation is redaction,
 not permission: it leaks through summaries, embeddings and citations. The Copilot
-failure DIRECTION cites — salary data surfaced through misconfigured SharePoint
+classic failure — salary data surfaced through misconfigured SharePoint
 permissions — is exactly the bug that happens when the model reads first and the
 filter runs second.
 
@@ -108,7 +108,7 @@ async def ingest_text(
     incremental migration rather than a schema break.
     """
     raise NotImplementedError(
-        "M5: chunk, embed via the frozen embedding model, and insert into `chunks` "
+        "Planned: chunk, embed via the frozen embedding model, and insert into `chunks` "
         "with org_id/owner_account_id/scope set from `account`. Until then "
         "tests/test_tenancy_leak.py fails, which is correct."
     )
@@ -138,7 +138,7 @@ async def retrieve(
         return []
 
     raise NotImplementedError(
-        "M5: implement pgvector search over `chunks` using VISIBILITY_PREDICATE. "
+        "Planned: implement pgvector search over `chunks` using VISIBILITY_PREDICATE. "
         "Until then tests/test_tenancy_leak.py fails, which is correct — the "
         "target exists before the thing that satisfies it."
     )

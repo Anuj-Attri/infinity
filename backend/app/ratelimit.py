@@ -11,7 +11,7 @@ replica: one process sees every request, and a shared counter would be ceremony.
 ⚠ THIS IS NOW ENFORCED BY A DASHBOARD SETTING, NOT BY CODE. `railway.json` used
 to pin `numReplicas: 1`, but that field lives in Railway's "Regions & Replicas"
 block, and config-as-code overrides the dashboard — so pinning it also froze the
-REGION control. Replicas are set in the dashboard now (see docs/RUNBOOK.md).
+REGION control. Replicas are set in the dashboard now.
 
 The tripwire is therefore weaker than it was and worth stating plainly: scaling
 to two replicas DOUBLES the effective rate limit, silently, with nothing in this
@@ -63,6 +63,8 @@ RULES: dict[str, Rule] = {
     # Waitlist door claim (POST body). Path limiter is a second belt; the
     # gatekeeper's door_* counters are the one that covers every presentation.
     "/access": Rule(40, 900, "too many requests"),
+    # Each call creates a throwaway account on disk.
+    "/guest/start": Rule(20, 900, "too many new sessions"),
     # Costs money per call.
     "/chat": Rule(60, 60, "too many requests"),
     "/mission": Rule(20, 60, "too many requests"),

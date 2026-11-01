@@ -21,7 +21,7 @@ export async function feedTextOrLink(input: string): Promise<FeedResult> {
   return { source: r.node.title || r.node.slug, chunks: 1, already: false };
 }
 
-/** Feed a file's bytes (the desktop backend runs the real extractor + OCR). */
+/** Feed a file's bytes (the backend runs the real extractor + OCR). */
 export async function feedFile(blob: Blob, name: string): Promise<FeedResult> {
   const r = await vaultIngestFile(blob, name || "document");
   return { source: r.node.title || r.node.slug, chunks: 1, already: false };

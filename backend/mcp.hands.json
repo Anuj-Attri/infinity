@@ -2,8 +2,9 @@
   "_comment": "Built-in MCP hands, seeded into the registry at startup. Edit + restart to change.",
 
   "_why_no_stdio_hands": [
-    "Mark 3 shipped two stdio hands — a filesystem server rooted at C:\\Users\\user",
-    "and C:\\Code, and Playwright driving msedge. Both spawned a subprocess on the",
+    "The desktop version shipped two stdio hands — a filesystem server rooted at a local home",
+    "directory and a code folder, plus Playwright driving msedge. Both spawned a",
+    "subprocess on the",
     "machine running the backend. On a single-user desktop that machine was the",
     "user's own, so 'the filesystem hand can read your files' was the feature.",
     "",
@@ -14,7 +15,7 @@
     "accident. Remote HTTP MCP servers are the supported path: they run on",
     "someone else's machine, under the same consent gate.",
     "",
-    "mcp_stdio.py is kept and unmounted. DIRECTION names it the template for the",
+    "mcp_stdio.py is kept and unmounted. It is the template for the",
     "LSP bridge — the same async JSON-RPC shape with Content-Length framing."
   ],
 

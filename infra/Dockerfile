@@ -1,4 +1,4 @@
-# Mark 4 — a long-running container, NOT a serverless function.
+# Infinity — a long-running container, NOT a serverless function.
 # That is a hard requirement, not a preference: the chat path streams NDJSON and
 # research/browse jobs run for minutes. Serverless adapters buffer responses and
 # enforce request timeouts, which turns streaming into a dead-feeling lump and

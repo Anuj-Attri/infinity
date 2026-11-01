@@ -42,7 +42,7 @@ TIER_MODELS: dict[str, str] = {
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 OPENROUTER_REFERER = "http://127.0.0.1:1420"
-OPENROUTER_TITLE = "Infinity (Reactor Mk3)"
+OPENROUTER_TITLE = "Infinity"
 # Zero-retention data policy applied to EVERY dispatch OpenRouter call — routes
 # only to upstreams that do NOT log/train on the payload. Mirrors the chat lane.
 OPENROUTER_DATA_POLICY = {"data_collection": "deny"}

@@ -16,11 +16,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from . import vault as vault_mod
+from .accounts import account_id_for
 from . import skills_engine
 from .agent import runtime as mission_runtime
 from .agent import store as mission_store
@@ -49,21 +50,9 @@ class _MissionRunIn(BaseModel):
     max_concurrency: int = 3
 
 
-def _account_id() -> str:
-    """Whose missions these are.
-
-    Today there is exactly one tenant, and the app-level auth dependency has
-    already verified the session before any of these handlers run — so naming
-    the single account here is accurate, not a guess. It is a FUNCTION rather
-    than a constant so that when real identity lands, this becomes a request
-    dependency and every call site below is already asking the right question.
-    """
-    from .accounts import SINGLE_TENANT
-    return SINGLE_TENANT.id
-
-
 @_extra.post("/mission/run")
-async def mission_run(body: _MissionRunIn) -> dict:
+async def mission_run(body: _MissionRunIn,
+                      account_id: str = Depends(account_id_for)) -> dict:
     if not mission_runtime.ready():
         raise HTTPException(status_code=503, detail="mission runtime not ready")
     if _dispatch_registry is None or _dispatch_registry.get_provider() is None:
@@ -79,27 +68,29 @@ async def mission_run(body: _MissionRunIn) -> dict:
         spec = MissionSpec(title=(body.title or "Mission").strip()[:60], goal=body.goal,
                            model=body.model, nodes=nodes,
                            max_concurrency=max(1, min(5, body.max_concurrency)))
-        return mission_runtime.start(spec, account_id=_account_id())
+        return mission_runtime.start(spec, account_id=account_id)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)[:200])
 
 
 @_extra.get("/mission/recent")
-async def mission_recent(limit: int = Query(20, ge=1, le=100)) -> dict:
-    return {"items": mission_store.recent(limit, account_id=_account_id())}
+async def mission_recent(limit: int = Query(20, ge=1, le=100),
+                         account_id: str = Depends(account_id_for)) -> dict:
+    return {"items": mission_store.recent(limit, account_id=account_id)}
 
 
 @_extra.get("/mission/{mission_id}")
-async def mission_get(mission_id: str) -> dict:
-    snap = mission_runtime.get(mission_id, account_id=_account_id())
+async def mission_get(mission_id: str, account_id: str = Depends(account_id_for)) -> dict:
+    snap = mission_runtime.get(mission_id, account_id=account_id)
     if snap is None:
         raise HTTPException(status_code=404, detail="unknown mission")
     return snap
 
 
 @_extra.get("/mission/{mission_id}/events")
-async def mission_events(mission_id: str) -> StreamingResponse:
-    if mission_runtime.get(mission_id, account_id=_account_id()) is None:
+async def mission_events(mission_id: str,
+                         account_id: str = Depends(account_id_for)) -> StreamingResponse:
+    if mission_runtime.get(mission_id, account_id=account_id) is None:
         raise HTTPException(status_code=404, detail="unknown mission")
 
     async def gen():
@@ -110,8 +101,8 @@ async def mission_events(mission_id: str) -> StreamingResponse:
 
 
 @_extra.post("/mission/{mission_id}/stop")
-async def mission_stop(mission_id: str) -> dict:
-    return {"stopped": mission_runtime.stop(mission_id, account_id=_account_id())}
+async def mission_stop(mission_id: str, account_id: str = Depends(account_id_for)) -> dict:
+    return {"stopped": mission_runtime.stop(mission_id, account_id=account_id)}
 
 
 # ── Skills ───────────────────────────────────────────────────────────────────
@@ -188,8 +179,8 @@ def wire(app, *, utility_llm, chat_registry, dispatch_registry, spend) -> None:
 
 
 def mount_frontend(app) -> None:
-    """Serve the built UI (dist/) for thin clients — cyberdeck kiosk, phone
-    browser. MUST be called AFTER all API routes are registered (a mount at "/"
+    """Serve the built UI (dist/) so one origin serves both the page and the API.
+    MUST be called AFTER all API routes are registered (a mount at "/"
     is a catch-all; earlier-registered routes win, this catches the rest).
     No-op when there's no production build, so dev (vite) is untouched."""
     from pathlib import Path as _P

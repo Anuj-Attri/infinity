@@ -1,6 +1,6 @@
-// Terminal — placeholder until the cloud sandbox lands (M6).
+// Terminal — placeholder until the cloud sandbox lands 
 //
-// Mark 3's terminal was a real host PowerShell over Tauri's ConPTY: the tile
+// The desktop version's terminal was a real host PowerShell over Tauri's ConPTY: the tile
 // called pty_spawn / pty_write / pty_resize through Tauri IPC and piped bytes
 // into xterm.js. None of that can exist in a browser, and it should not — a
 // hosted product must never hand a page a shell on the machine serving it.

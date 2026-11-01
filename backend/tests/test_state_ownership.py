@@ -1,12 +1,12 @@
 """Every function that touches stored state must name its owner.
 
-The standing invariant, from DIRECTION.md and repeated at the top of AGENTS.md:
+The standing invariant:
 
     Every piece of state belongs to exactly one account. No global singletons.
     Any function that reads or writes state takes an explicit `account`.
     If you cannot name the owner of a row, the schema is wrong.
 
-MARK4.md's M4 says this is "enforced by a CI grep, not by discipline", and this
+This is "enforced by a CI grep, not by discipline", and this
 is that check. It is a RATCHET, not a wall: the 45 functions below genuinely do
 not take an account today, and pretending otherwise would just mean a red build
 nobody can fix. What it forbids is adding a 46th.
@@ -79,6 +79,16 @@ UNOWNED: set[str] = {
 # not do its job.
 # ---------------------------------------------------------------------------
 DELIBERATELY_GLOBAL: dict[str, str] = {
+    "app/guest.py:sweep":
+        "Expires guest sessions across all guests by age. Each one it removes is "
+        "deleted with guest.purge(account_id), which names the account; nothing "
+        "moves between accounts.",
+    "app/guest.py:purge_orphans":
+        "Runs at boot, when no guest token exists any more. Deletes each listed "
+        "guest by id through guest.purge(account_id).",
+    "app/guest.py:end_now":
+        "Takes a token, not an account: the token is what identifies the guest, "
+        "and it resolves to exactly one account before anything is deleted.",
     "app/agent/store.py:recover_interrupted":
         "A crash does not respect tenancy. Every mission the dead process was "
         "running is stranded whoever owns it, and leaving other accounts' work "
@@ -105,7 +115,7 @@ DELIBERATELY_GLOBAL: dict[str, str] = {
     "app/entitlements.py:all_switched_off":
         "An operator view: 'which accounts are currently stopped'. Scoping it to "
         "one account would make it unable to answer the only question it exists "
-        "to answer. Becomes owner-only at M3, which is an AUTHORISATION question, "
+        "to answer. Becomes owner-only once accounts exist, which is an AUTHORISATION question, "
         "not an ownership one.",
 }
 
@@ -350,10 +360,14 @@ FILE_STATE_GLOBAL: dict[str, str] = {
         "would be circular — it is the thing accounts are stored inside.",
     "app/auth.py:_DATA_DIR":
         "tokens.json is the single master password and its device tokens. It IS "
-        "the pre-account authentication scheme; Supabase Auth retires it at M3.",
+        "the pre-account authentication scheme; real accounts retire it.",
     "app/mcp_client.py:_STATE_PATH":
         "mcp_state.json holds one boolean: the operator's global MCP kill "
         "switch. Deliberately service-wide, like the spend killswitch.",
+    "app/guest.py:_REGISTRY_PATH":
+        "guest_accounts.json — the ids of live guest accounts and nothing else, "
+        "kept so a restart can delete what their sessions left behind. It names "
+        "accounts; it holds none of their data.",
     "app/agent/store.py:_DB_PATH": "A database file; its ROWS carry the owner.",
     "app/vault.py:_DB_PATH": "A database file; its ROWS carry the owner.",
     "app/entitlements.py:_DB_PATH": "A database file; its ROWS carry the owner.",

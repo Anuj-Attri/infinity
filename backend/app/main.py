@@ -1,7 +1,7 @@
-"""Mark 4 backend — Mark 3's `main.py`, lifted onto the hosted spine.
+"""Infinity backend: the desktop version's `main.py`, moved onto a hosted spine.
 
 This is a PORT, not a rewrite. Every endpoint, prompt constant and helper is
-Mark 3's, unchanged, except for the deletions the hosted container forces:
+The desktop version's, unchanged, except for the deletions a hosted container forces:
 
     dropped   rag.py (the Vault is the one knowledge base), voice.py,
               trader.py / trader_agent.py, providers/gemma_local.py,
@@ -9,17 +9,17 @@ Mark 3's, unchanged, except for the deletions the hosted container forces:
               (reactor.providers.ollama_local no longer exists).
     changed   CORS is an env allowlist, never "*". The repo-root sys.path hack
               now points at backend/, where the `reactor` package lives.
-    kept      /health and /echo/stream from the M0 skeleton, verbatim — CI
+    kept      /health and /echo/stream from the original skeleton, verbatim — CI
               asserts both against the real container image.
 
 There is exactly ONE model lane now: OpenRouter / BYOK via the chat registry.
-Mark 3 quietly dropped a failed turn onto a local model; nothing is left to
+The desktop version quietly dropped a failed turn onto a local model; nothing is left to
 drop to, so every such path returns an EXPLICIT error instead. A refusal that
 names its cause beats a reply that silently came from nowhere.
 
 Endpoints:
-    GET  /health       -> {"ok": true, "service": "mark4", ...}   # M0 contract
-    POST /echo/stream  -> NDJSON, word by word                    # M0 contract
+    GET  /health       -> {"ok": true, "service": "infinity", ...}   # CI contract
+    POST /echo/stream  -> NDJSON, word by word                    # CI contract
     POST /chat         -> {"reply": str, "model": str}
     POST /chat/stream  -> NDJSON deltas
 """
@@ -45,8 +45,8 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 # Make the shared `reactor` package importable without an install step.
-# MARK 3 PUT THIS AT parents[2]: there, main.py was <repo>/backend/app/main.py
-# and `reactor` sat at the REPO ROOT. In Mark 4 the package moved INTO the
+# THE DESKTOP VERSION PUT THIS AT parents[2]: there, main.py was <repo>/backend/app/main.py
+# and `reactor` sat at the REPO ROOT. Here the package moved INTO the
 # backend (backend/reactor/), so the directory that has to go on sys.path is
 # backend/ — parents[1]. parents[2] would put the repo root on the path and
 # `import reactor` would fail with a bare ModuleNotFoundError at startup.
@@ -99,15 +99,16 @@ from typing import Any  # noqa: E402  # MUST be importable: `from __future__ imp
 import httpx  # noqa: E402
 from fastapi import Depends, FastAPI, HTTPException, Query, Request  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import JSONResponse, StreamingResponse  # noqa: E402
+from fastapi.responses import JSONResponse, Response, StreamingResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from . import auth as auth_layer  # noqa: E402
-from .accounts import NotAuthenticated
+from . import guest  # noqa: E402
+from .accounts import NotAuthenticated, account_id_for
 from .entitlements import Killswitched, assert_may_spend  # noqa: E402
 
-# NOT IMPORTED IN MARK 4 (and the reason the local lane below is gone):
-#   reactor.providers.ollama_local  — deleted; Ollama is out of scope (AGENTS.md)
+# NOT IMPORTED (and the reason the local lane below is gone):
+#   reactor.providers.ollama_local  — deleted; there is no local model lane
 #   reactor.router.tiered           — imports the above, so it cannot load either
 from reactor.memory import MemoryStore, embed_text  # noqa: E402
 from reactor.memory.embed import EmbedError  # noqa: E402
@@ -134,14 +135,14 @@ from . import context_budget  # noqa: E402
 from .paths import data_path
 
 # Single shared memory store. DB lives at <repo>/.data/infinity.db (gitignored).
-# TODO(M2): a container filesystem is ephemeral — this SQLite file does not
-# survive a redeploy. Postgres/Supabase owns this from M3 (AGENTS.md).
+# TODO: a container filesystem is ephemeral — this SQLite file does not
+# survive a redeploy. Moves to Postgres when hosted accounts land.
 _DB_PATH = data_path("infinity.db")
 MEMORY = MemoryStore(_DB_PATH)
-# Mark 3 also called rag_set_store(MEMORY) here so rag.py's doc_chunks table
+# The desktop version also called rag_set_store(MEMORY) here so rag.py's doc_chunks table
 # shared this DB. rag.py is GONE — the Vault is the one knowledge base.
 
-SERVICE_NAME = "mark4-backend"
+SERVICE_NAME = "infinity-backend"
 
 # ── OpenRouter model map ─────────────────────────────────────────────────────
 # All LANGUAGE runs on OpenRouter now (the local model is a CPU fallback only).
@@ -154,7 +155,7 @@ SERVICE_NAME = "mark4-backend"
 #     lines) but is cheap + once-a-day.
 _UTILITY_MODEL = os.environ.get("OPENROUTER_UTILITY_MODEL", "openai/gpt-4o-mini")
 
-# Mark 3 defined _NOTICE_OUTAGE / _NOTICE_CAP here — the small italic lines
+# The desktop version defined _NOTICE_OUTAGE / _NOTICE_CAP here — the small italic lines
 # prefixed to a reply that had just been demoted to the local CPU model. There
 # is no demotion any more, so both moved next to /chat and became REFUSALS
 # rather than prefixes. See "THERE IS NO SECOND LANE" below.
@@ -172,7 +173,7 @@ async def _utility_llm(
     Returns text, or None on failure (callers treat None as 'no signal').
     Never raises.
 
-    Mark 3 dropped to a local Ollama CPU model when OpenRouter was unreachable
+    The desktop version dropped to a local Ollama CPU model when OpenRouter was unreachable
     or over-cap. That lane does not exist here, so there is exactly ONE attempt
     — and every way it can come back empty is LOGGED with its cause. A caller
     reading None must be able to find out why from the log, not guess."""
@@ -216,11 +217,11 @@ async def _lifespan(application: FastAPI):
     # token.
     try:
         from . import hosting
-        from .gatekeeper import is_locked
+        from .gatekeeper import is_locked, is_public
         w = hosting.where()
         print(f"[boot] host={w['platform']} region={w['region'] or 'unknown'} "
               f"env={w['environment'] or '-'} proxy={hosting.describe()}", flush=True)
-        print(f"[boot] public door: {'SHUT (ACCESS_TOKEN set)' if is_locked() else 'NO TOKEN SET — non-loopback requests get 404'}",
+        print(f"[boot] public door: {'SHUT (ACCESS_TOKEN set)' if is_locked() else ('OPEN to anyone (ALLOW_PUBLIC or GUEST_SESSIONS)' if is_public() else 'NO TOKEN SET — non-loopback requests get 404')}",
               flush=True)
         # Whether state survives a redeploy. Invisible otherwise, and the failure
         # is silent: the app works perfectly, then forgets the master password on
@@ -241,7 +242,7 @@ async def _lifespan(application: FastAPI):
     # Warm the EMBEDDER so the first real question isn't eaten by a cold load.
     # Fire-and-forget; never blocks startup or fails the app.
     #
-    # Mark 3 also warmed the local chat model here (route("hi")), preloaded
+    # The desktop version also warmed the local chat model here (route("hi")), preloaded
     # YOLO-World for the camera, and preloaded Whisper via app.voice._load_stt.
     # All three are gone: no local chat lane, no vision, no voice.
     async def _warmup() -> None:
@@ -250,19 +251,27 @@ async def _lifespan(application: FastAPI):
         except Exception as e:
             # Best-effort, but never silent — a cold/unreachable embedder makes
             # memory recall and session grounding quietly stop working.
-            # TODO(M2): reactor.memory.embed still talks to a LOCAL Ollama host.
+            # TODO: reactor.memory.embed still talks to a LOCAL Ollama host.
             # In the container there is none, so this always fails until the
-            # embedder moves to the hosted provider (Voyage voyage-4, AGENTS.md).
+            # embedder moves to the hosted provider (Voyage voyage-4).
             print(f"[warmup] embedder unavailable ({type(e).__name__}: {e})", flush=True)
     asyncio.create_task(_warmup())
 
     # MCP hands: seed the config-driven built-in servers and pre-list their
     # tools in the background so the first chat turn doesn't pay npx spawn
     # latency. Fail-closed: a hand that can't start simply exposes no tools.
-    # TODO(M2): the stdio hands are Windows-shaped (mcp.hands.json is not copied
+    # TODO: the stdio hands are Windows-shaped (mcp.hands.json is not copied
     # by the Dockerfile, and the Playwright hand asks for --browser msedge,
-    # which does not exist on Linux). Left untouched on purpose — M2 owns it.
+    # which does not exist on Linux). Left untouched on purpose.
     asyncio.create_task(mcp_client.startup_warm())
+
+    _register_guest_purgers()
+    if guest.enabled():
+        n = await asyncio.to_thread(guest.purge_orphans)
+        print(f"[boot] guest sessions ON: idle limit {guest.idle_seconds() / 60:g} min, "
+              f"max {guest.max_sessions()}; cleared {n} orphaned guest account(s)",
+              flush=True)
+        asyncio.create_task(guest.run_sweeper())
 
     yield  # application runs
 
@@ -285,13 +294,19 @@ async def _lifespan(application: FastAPI):
 
 _AUTH_EXEMPT: frozenset[str] = frozenset({
     "/health",
-    # M0's transport prober. It reads and writes nothing — it echoes the words
+    # The transport prober. It reads and writes nothing — it echoes the words
     # it was handed — and CI calls it with no credentials to prove the container
     # streams incrementally. Gating it would turn that assertion into a 401.
     "/echo/stream",
     "/auth/status",
     "/auth/setup",
     "/auth/login",
+    # Guest sessions. /guest/start refuses unless GUEST_SESSIONS=1, and
+    # /guest/end only ever deletes the session whose token it is handed.
+    "/guest/start",
+    "/guest/end",
+    # A two-line script the page loads before the app. Holds no state.
+    "/runtime-config.js",
     # Waitlist door. Sets the infinity_access cookie from a fragment POST so the
     # long-lived ACCESS_TOKEN never appears in proxy query-string logs. Serves
     # no app state. See app.gatekeeper.
@@ -318,7 +333,14 @@ async def require_auth(request: Request) -> None:
         return  # CORS preflight — never gated
     if request.url.path in _AUTH_EXEMPT:
         return
-    if auth_layer.verify_token(_bearer_token(request)) is None:
+    token = _bearer_token(request)
+    if guest.lookup(token) is not None:
+        # A guest may use the app but not change the instance for everyone.
+        if guest.is_operator_only(request.method, request.url.path):
+            raise HTTPException(status_code=403,
+                                detail="Not available in a guest session.")
+        return
+    if auth_layer.verify_token(token) is None:
         raise HTTPException(status_code=401, detail="Authentication required")
 
 
@@ -333,7 +355,7 @@ async def require_auth(request: Request) -> None:
 _DOCS = os.environ.get("ENABLE_API_DOCS") == "1"
 
 app = FastAPI(
-    title="Mark 4", version="0.0.1",
+    title="Infinity", version="0.1.0",
     lifespan=_lifespan, dependencies=[Depends(require_auth)],
     docs_url="/docs" if _DOCS else None,
     redoc_url="/redoc" if _DOCS else None,
@@ -341,9 +363,9 @@ app = FastAPI(
 )
 
 # CORS: an explicit allowlist from the environment. NEVER "*" — that was safe on
-# loopback in Mark 3 (the Tauri WebView loaded from tauri://localhost, a
+# loopback in the desktop version (the Tauri WebView loaded from tauri://localhost, a
 # different origin from 127.0.0.1:8000, and the backend was bound to loopback)
-# and is fatal hosted (PUNCHLIST B7). An unset origin list means "same-origin
+# and is fatal hosted. An unset origin list means "same-origin
 # only", which fails closed rather than open.
 _origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()]
 # Registered BEFORE CORSMiddleware on purpose. Starlette runs middleware in
@@ -391,7 +413,7 @@ async def _not_authenticated(request: Request, exc: NotAuthenticated) -> JSONRes
 async def _killswitched(request: Request, exc: Killswitched) -> JSONResponse:
     """A paused deployment is a 403 with a reason, never a 500.
 
-    A 500 reads as "we broke" and sends the owner looking for a bug. This is a
+    A 500 reads as "we broke" and sends the operator looking for a bug. This is a
     deliberate operator action, so the response says so and repeats the reason
     they gave, which is the only thing that makes the pause diagnosable from the
     outside.
@@ -408,7 +430,7 @@ async def _killswitched(request: Request, exc: Killswitched) -> JSONResponse:
 # This handler converts any uncaught exception into a JSON 500 that carries the
 # CORS header itself, so every endpoint failure is at least legible.
 #
-# Mark 3 hardcoded `Access-Control-Allow-Origin: *` here. That is the same
+# The desktop version hardcoded `Access-Control-Allow-Origin: *` here. That is the same
 # landmine the middleware above exists to avoid — a wildcard on a credentialed,
 # multi-tenant origin — so the header is now ECHOED ONLY for an origin already
 # in the allowlist, and omitted otherwise. Detail stays generic (fail-closed);
@@ -444,8 +466,8 @@ async def _browse_to_vault(title: str, text: str, url: str):
     return await file_report(title[:120], text, source_kind="url", source_ref=url[:300])
 browse_set_ingest(_browse_to_vault)
 # Legacy RAG (doc_chunks) is GONE — the Vault is the one knowledge base
-# (document ingest and query_documents route through /vault/*). Mark 3 kept
-# rag.py on disk, unmounted, as a rollback; Mark 4 does not ship the file at
+# (document ingest and query_documents route through /vault/*). The desktop version kept
+# rag.py on disk, unmounted, as a rollback; this one does not ship the file at
 # all, so there is nothing here to import, mount, or set a store on.
 
 # MCP connector marketplace — connect ANY Streamable-HTTP MCP server; its tools
@@ -480,9 +502,12 @@ class NotifyTestIn(BaseModel):
 
 
 @app.get("/notify/poll")
-async def notify_poll(since: int = 0) -> dict[str, Any]:
+async def notify_poll(request: Request, since: int = 0) -> dict[str, Any]:
     """The phone drains this (foreground poll + on-resume). Everything returned
-    already cleared the gate."""
+    already cleared the gate. The queue is the operator's, so a guest gets an
+    empty feed rather than someone else's notifications."""
+    if guest.lookup(_bearer_token(request)) is not None:
+        return {"items": [], "last_id": since}
     return _notify.poll(since)
 
 
@@ -510,7 +535,7 @@ async def notify_test(body: NotifyTestIn) -> dict[str, Any]:
             "item": item}
 
 # Chat provider registry — BYOK premium keys (Anthropic / OpenAI / Gemini) and
-# OpenRouter. User-facing. Mark 3's always-on local entry is gone with Ollama.
+# OpenRouter. User-facing. The desktop version's always-on local entry is gone with Ollama.
 # The sub-agent "dispatch" registry is a separate module with its own HTTP
 # surface added in a later pass.
 app.include_router(chat_providers_router)
@@ -521,9 +546,9 @@ dispatch_provider_registry.init_from_disk()
 # Device-auth layer: warm the password-hash + token caches from disk so the
 # require_auth gate (added as an app-level dependency above) can answer
 # without a disk hit per request.
-# TODO(M2): auth.py's token store goes through providers/keystore.py, which
+# TODO: auth.py's token store goes through providers/keystore.py, which
 # uses DPAPI via ctypes.WinDLL("crypt32") and silently falls back to PLAINTEXT
-# on Linux. Deliberately untouched — M2 owns key custody.
+# on Linux. Deliberately untouched; key custody is separate work.
 auth_layer.init_from_disk()
 
 # ── Feature wiring (one call; see integration.py for WHY) ────────────────────
@@ -531,7 +556,7 @@ auth_layer.init_from_disk()
 # endpoints, and initializes them. Kept in a small module because the mount's
 # sync layer kept dropping inline edits to this large file.
 #
-# NOT wrapped in a try. Mark 3 caught everything here so that "wiring must never
+# NOT wrapped in a try. The desktop version caught everything here so that "wiring must never
 # take down the core backend" — and this is exactly how the Vault, OCR, missions
 # and skills all went missing while the service came up healthy and answered
 # questions with nothing behind them. A traceback in a log nobody reads is not a
@@ -595,10 +620,10 @@ VOICE_REPLY_CHAR_CAP = 600
 _CONTEXT_LIMIT_TOKENS = int(os.environ.get("CONTEXT_BUDGET_TOKENS", "24000"))
 
 # ── AUTO routing ──────────────────────────────────────────────────────────────
-# The "infinity/auto" sentinel resolves per-turn. In Mark 3 that was a real
+# The "infinity/auto" sentinel resolves per-turn. In the desktop version that was a real
 # choice: short/routine/private/simple-tool turns ran on the LOCAL Gemma 4 12B
 # (zero cloud spend) and hard/long-context/heavy-coding turns went to the
-# OpenRouter default. Mark 4 has no local lane, so today the sentinel always
+# OpenRouter default. There is no local lane, so today the sentinel always
 # resolves to the API model — see _route_auto for why the classifier survives.
 # Explicit model picks are always honored; this only runs for the sentinel.
 _AUTO_API_MODEL = os.environ.get("AUTO_API_MODEL", "anthropic/claude-sonnet-5")
@@ -658,7 +683,7 @@ def _resolve_auto_for(text: str) -> str:
 async def _route_auto(body: "ChatIn") -> str:
     """Resolve the auto sentinel to a concrete model id for THIS turn.
 
-    ONE LANE, ON PURPOSE. Mark 3 chose between the local Gemma 4 12B and the
+    ONE LANE, ON PURPOSE. The desktop version chose between the local Gemma 4 12B and the
     API model here; providers/gemma_local.py is gone, so every classification
     below currently resolves to _AUTO_API_MODEL. The classifier is KEPT rather
     than collapsed to `return _AUTO_API_MODEL` for two reasons:
@@ -768,79 +793,14 @@ class _ReplyClamp:
 # No hardcoded user name. No jokes-on-command. The point is a stable
 # friend-tone baseline so memory-off / empty-memory conversations don't
 # fall back to generic-assistant apology behavior.
-# BACKUP — original persona, verbatim, kept for instant fallback. To revert:
-# set DEFAULT_PERSONA = PERSONA_BACKUP_2026_06_14. (Iterable; do not delete.)
-PERSONA_BACKUP_2026_06_14 = (
-    "You are Nova — a private, local AI companion. You're a friend, not a "
-    "customer-service assistant: direct, warm, never deferential. Talk like a "
-    "sharp friend who knows the person well.\n"
-    "\n"
-    "Don't apologize reflexively or fill space with empty politeness — between "
-    "friends it just feels formal. If you're wrong, own it plainly and move on. "
-    "You can be blunt, you can disagree, you can tease. Your humor is dry and "
-    "behavioral, not loud.\n"
-    "\n"
-    "The facts you know about the person are background — know them silently. "
-    "Don't open with them or work them in for flavor; bring a fact up only when "
-    "it's actually relevant to what they asked."
-)
-
-# BACKUP — the "sidekick who gets you" persona (active 2026-06-14 → 2026-07-17).
-# Kept verbatim for instant revert. To restore: DEFAULT_PERSONA = this.
-PERSONA_BACKUP_SIDEKICK_2026_07_17 = (
-    "You are Nova — the user's private AI sidekick. Not a clerk, not an assistant "
-    "that recites: a sharp, present partner who's on his wavelength and locks in.\n"
-    "\n"
-    "(removed)"
-    "references and answer in kind; you meet his energy instead of stepping back "
-    "from it. Talk to him as an equal who already shares the context: quick, dry, "
-    "a little playful, no over-explaining things he already knows and no "
-    "hand-holding. When he comes in hot — \"(removed)"
-    "tokens to burn\" — you grin and match it, you don't blink or unpack the joke.\n"
-    "\n"
-    "Between partners, skip the customer-service reflexes — the empty politeness "
-    "and the reflexive apologies just feel formal. If you're wrong, own it in a "
-    "line and keep moving. You can be blunt, disagree, and tease; the wit is dry "
-    "and behavioral, never loud.\n"
-    "\n"
-    "Two habits to drop: don't echo his words back as an opener (no \"Tokens to "
-    "burn, huh?\", no \"You're waiting on me?\") — just respond, straight into "
-    "the substance. And your reply is plain spoken text: you're speaking, not "
-    "being quoted, so never wrap the whole message in quotation marks.\n"
-    "\n"
-    "You know the user — his setup, his tastes, his history. That knowledge lives in "
-    "HOW you respond: you use it to be sharper and more on-point, woven in like a "
-    "friend who just remembers. It shows through presence, not announcement — the "
-    "fact that you're already on the same page IS the signal, so you never need to "
-    "say that you noticed or remembered something. Just be useful with it.\n"
-    "\n"
-    "When you surface something, surface it WITH A POINT — make a move, not a "
-    "menu. Always in natural language; never print bracketed tags like [news] or "
-    "[stocks] (those are broken UI junk, not speech). If a stock or the market "
-    "moved, say so and give him the angle — \"NVDA's slid a couple percent, could "
-    "be a dip worth watching.\" If he's frustrated with something, you're a "
-    "builder's sidekick — friction is a thing to build away: \"that's annoying — "
-    "want to spin up something to handle it?\" If he floats an idea, nudge it "
-    "toward a plan (he can run /plan to flesh it out). You don't list your "
-    "capabilities or hand him an action menu every turn — you're present, and when "
-    "you bring something up you have a reason for it.\n"
-    "\n"
-    "You already know the current state of his world this session — the market, "
-    "the news, the weather, what's on his plate — so when it comes up you just "
-    "SAY it, straight, with the real detail. You're not a service that goes and "
-    "looks things up: never narrate fetching (\"one sec, firing up the movers…\", "
-    "\"let me pull that up\"). You either have it and say it, or you don't and you "
-    "say that plainly. No loading screens, just presence."
-)
-
-# Active persona v2 — "voice of rationality" (approved verbatim,2026-07-17).
+# Active persona v2 — "voice of rationality" (approved verbatim, 2026-07-17).
 # Installed EXACTLY as approved: short, enabling, permission-not-checklist. It is
 # deliberately NOT expanded into a rules wall — personality is judgment, wired
 # structurally (see OUTPUT_HYGIENE for the functional output guards, the router's
 # persona-heavy signal for model choice, and the removed temperature clamp so the
 # opinions actually breathe). Do not pad this with negative-rule lists.
 #
-# The name: this text used to say "when the user is wrong". A persona constant is
+# The name: this text used to name one specific person. A persona constant is
 # the wrong place to keep a person — the second account to sign in would have
 # been called by the first account's name in every reply. It is written in the
 # neutral form here, and whoever is actually talking is named by a separate
@@ -905,10 +865,10 @@ THINK_MODE_ADDENDUM = (
 
 @app.get("/health")
 async def health() -> dict[str, object]:
-    """M0 definition of done, part 1: this returns 200 on the public URL."""
+    """Deployment check, part 1: this returns 200 on the public URL."""
     return {
         "ok": True,
-        "service": "mark4",
+        "service": "infinity",
         "version": app.version,
         "uptime_s": round(time.time() - _BOOTED_AT, 1),
         "cors_origins": len(_origins),
@@ -979,19 +939,6 @@ def _check_setup_allowed(request: Request, supplied: str | None) -> None:
     )
 
 
-def _account_id() -> str:
-    """Whose state this request touches.
-
-    One tenant today, and the app-level auth dependency has already verified the
-    session before any handler runs — so naming the single account is accurate
-    rather than a guess. A function, not a constant, so that when real identity
-    lands this becomes a request dependency and every call site below is already
-    asking the right question.
-    """
-    from .accounts import SINGLE_TENANT
-    return SINGLE_TENANT.id
-
-
 @app.get("/auth/status")
 def auth_status(request: Request) -> dict[str, Any]:
     """Unauthenticated. First-run UI reads this to choose setup vs login."""
@@ -1002,6 +949,8 @@ def auth_status(request: Request) -> dict[str, Any]:
         # the user cannot interpret.
         "setup_token_required": bool(_SETUP_TOKEN),
         "setup_available": bool(_SETUP_TOKEN) or _is_loopback(request),
+        # When true the page skips sign-in and runs as a throwaway guest.
+        "guest_mode": guest.enabled(),
     }
 
 
@@ -1039,6 +988,9 @@ def auth_login(body: AuthLoginIn) -> dict[str, Any]:
 def auth_me(request: Request) -> dict[str, Any]:
     """Authenticated. Frontend calls this on launch to validate a stored
     token. The gate already verified it; echo the device metadata."""
+    if guest.lookup(_bearer_token(request)) is not None:
+        return {"device_name": "Guest session", "created_at": None,
+                "last_seen_at": None, "guest": True}
     meta = auth_layer.verify_token(_bearer_token(request))
     if meta is None:  # defense in depth; the gate should have caught this
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -1080,9 +1032,63 @@ def auth_revoke_device(device_id: str, request: Request) -> dict[str, Any]:
 
 @app.post("/auth/logout")
 def auth_logout(request: Request) -> dict[str, Any]:
-    """Authenticated. Revoke the CALLER's own token (sign out this device)."""
-    auth_layer.revoke_token(_bearer_token(request))
+    """Authenticated. Revoke the CALLER's own token (sign out this device).
+    For a guest, that deletes the whole session at once."""
+    token = _bearer_token(request)
+    if guest.end_now(token):
+        return {"ok": True, "deleted": True}
+    auth_layer.revoke_token(token)
     return {"ok": True}
+
+
+# ── Guest sessions (GUEST_SESSIONS=1) ────────────────────────────────────────
+
+@app.post("/guest/start")
+def guest_start() -> dict[str, Any]:
+    """Unauthenticated. A fresh throwaway account for this browser tab."""
+    if not guest.enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    try:
+        token, _ = guest.start()
+    except guest.TooManyGuests:
+        raise HTTPException(status_code=503,
+                            detail="This instance is full right now. Try again shortly.")
+    return {"token": token, "idle_minutes": guest.idle_seconds() / 60}
+
+
+@app.post("/guest/end")
+async def guest_end(request: Request) -> dict[str, Any]:
+    """Unauthenticated, because a closing page can only send a beacon, and a
+    beacon cannot set an Authorization header. The token travels in the body.
+    Knowing the token is the authority: it can only end its own session."""
+    token = _bearer_token(request)
+    if not token:
+        token = (await request.body()).decode("utf-8", "replace").strip()[:200]
+    return {"ok": guest.end(token)}
+
+
+@app.get("/runtime-config.js", include_in_schema=False)
+def runtime_config_js() -> Response:
+    """Loaded by index.html before the app bundle.
+
+    In guest mode it points the app's persistent browser storage at per-tab
+    storage, so layouts, drafts and settings die with the tab instead of
+    surviving on a shared computer. It runs before any app code, so it covers
+    every storage key, including ones not yet written.
+    """
+    body = "window.__INFINITY_GUEST__=false;"
+    if guest.enabled():
+        body = (
+            "window.__INFINITY_GUEST__=true;"
+            "try{var L=window.localStorage;for(var i=L.length-1;i>=0;i--){"
+            "var k=L.key(i);if(k&&(k.indexOf('infinity.')===0||k.indexOf('supernova.')===0))"
+            "L.removeItem(k);}"
+            "Object.defineProperty(window,'localStorage',"
+            "{configurable:true,get:function(){return window.sessionStorage;}});"
+            "}catch(e){console.error('guest storage isolation failed',e);}"
+        )
+    return Response(content=body, media_type="application/javascript",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.post("/auth/reset")
@@ -1098,8 +1104,8 @@ def echo(body: EchoIn) -> EchoOut:
     return EchoOut(reply=f"you said: {body.message}")
 
 
-# Named EchoStreamIn, not EchoIn, only because Mark 3's /echo already owns that
-# class name above. The wire shape is the M0 skeleton's, unchanged.
+# Named EchoStreamIn, not EchoIn, only because the desktop version's /echo already owns that
+# class name above. The wire shape is the original skeleton's, unchanged.
 class EchoStreamIn(BaseModel):
     text: str = "the quick brown fox jumps over the lazy dog"
     delay_ms: int = 120
@@ -1107,7 +1113,7 @@ class EchoStreamIn(BaseModel):
 
 @app.post("/echo/stream")
 async def echo_stream(body: EchoStreamIn) -> StreamingResponse:
-    """M0 definition of done, part 2: NDJSON that arrives INCREMENTALLY.
+    """Deployment check, part 2: NDJSON that arrives INCREMENTALLY.
 
     The per-token delay is the whole point. A buffering proxy or a serverless
     adapter will hold the response and deliver it as one lump at the end — the
@@ -1241,7 +1247,7 @@ async def _filter_relevant_profile_facts(
         return profile_memories
 
 
-async def _build_chat_messages(body: ChatIn) -> tuple[list[dict], list[Memory], list[str]]:
+async def _build_chat_messages(body: ChatIn, *, account_id: str) -> tuple[list[dict], list[Memory], list[str]]:
     """Assemble the [system, ...history, user] message array for the model.
 
     The system message is ALWAYS set and is composed of two layers:
@@ -1302,7 +1308,7 @@ async def _build_chat_messages(body: ChatIn) -> tuple[list[dict], list[Memory], 
         # gate so irrelevant facts don't leak into unrelated turns (e.g. a
         # vegetarianism fact bleeding into a notes-summary). Facts stay in the
         # DB; the gate only trims this turn's injection.
-        profiles = await asyncio.to_thread(partial(MEMORY.list_by_type, account_id=_account_id()), "profile", PROFILE_MAX)
+        profiles = await asyncio.to_thread(partial(MEMORY.list_by_type, account_id=account_id), "profile", PROFILE_MAX)
         profiles = await _filter_relevant_profile_facts(body.message, profiles, body)
         for m in profiles:
             profile_lines.append(f"- {m.text}")
@@ -1311,7 +1317,7 @@ async def _build_chat_messages(body: ChatIn) -> tuple[list[dict], list[Memory], 
         # EPISODIC — cued by semantic similarity to this turn's message.
         if qvec is not None:
             ep_hits = await asyncio.to_thread(
-                partial(MEMORY.search_memories, account_id=_account_id()), qvec, 5, 0.45, "episodic"
+                partial(MEMORY.search_memories, account_id=account_id), qvec, 5, 0.45, "episodic"
             )
             for m in ep_hits:
                 episodic_lines.append(f"- {m.text}")
@@ -1326,7 +1332,7 @@ async def _build_chat_messages(body: ChatIn) -> tuple[list[dict], list[Memory], 
     # (1a) Who is asking. Appended even under a custom persona — a user who
     # rewrote the tone still expects to be called by their own name, and the
     # line is about identity rather than voice.
-    _who = _identity_line(_account_id())
+    _who = _identity_line(account_id)
     if _who:
         parts.append(_who)
 
@@ -1367,7 +1373,7 @@ async def _build_chat_messages(body: ChatIn) -> tuple[list[dict], list[Memory], 
             "  firewall; never try to word around it). You can CHAIN tools across",
             "  turns: plan, call one tool, read its result, then call the next.",
             "  After a result returns, answer grounded ONLY in it.",
-            # Mark 3 named one person's Windows folders here (Downloads,
+            # The desktop version named one person's Windows folders here (Downloads,
             # Desktop, Documents, a code root) and told the model the hands
             # take absolute Windows paths. That shipped to the model on EVERY
             # turn. It is wrong in a Linux container, and in a multi-tenant
@@ -1462,7 +1468,7 @@ async def _build_chat_messages(body: ChatIn) -> tuple[list[dict], list[Memory], 
     # files are queryable, so doc questions never reach query_documents. List
     # the ingested sources and steer their content questions to RAG.
     try:
-        _docs = await asyncio.to_thread(partial(MEMORY.list_docs, account_id=_account_id()))
+        _docs = await asyncio.to_thread(partial(MEMORY.list_docs, account_id=account_id))
     except Exception:
         _docs = []
     if _docs:
@@ -1630,7 +1636,7 @@ async def _extract_durable_fact(message: str, body: ChatIn) -> tuple[str, str] |
 
     prompt = _EXTRACTION_PROMPT.replace("{USER}", msg)
     # Cheap OpenRouter utility model, passed EXPLICITLY. Runs on every turn —
-    # Mark 3 sent the selected cloud id to Ollama → 404 → None, so auto-memory
+    # The desktop version sent the selected cloud id to Ollama → 404 → None, so auto-memory
     # capture was silently off on cloud turns. There is no fallback lane now:
     # if this returns None, _utility_llm has already logged why.
     raw = await _utility_llm(prompt, temperature=0.1, max_tokens=120)
@@ -1658,7 +1664,7 @@ async def _extract_durable_fact(message: str, body: ChatIn) -> tuple[str, str] |
     return (kind, text)
 
 
-async def _maybe_save_auto_memory(body: ChatIn) -> dict | None:
+async def _maybe_save_auto_memory(body: ChatIn, *, account_id: str) -> dict | None:
     """Run extraction + dedup + save. Returns the announce-payload dict if
     a memory was saved, otherwise None. Wraps everything in try/except —
     auto-memory is best-effort and must never break a chat reply."""
@@ -1671,7 +1677,7 @@ async def _maybe_save_auto_memory(body: ChatIn) -> dict | None:
         kind, text = fact
 
         # Dedup against existing memories — case-insensitive exact text match.
-        existing = await asyncio.to_thread(partial(MEMORY.list_memories, account_id=_account_id()))
+        existing = await asyncio.to_thread(partial(MEMORY.list_memories, account_id=account_id))
         norm = text.strip().lower()
         if any((m.text or "").strip().lower() == norm for m in existing):
             return None
@@ -1685,7 +1691,7 @@ async def _maybe_save_auto_memory(body: ChatIn) -> dict | None:
         m = await asyncio.to_thread(
             MEMORY.add_memory, text,
             type=kind, source="auto", confidence=0.85,
-            entities=[], embedding=vec, account_id=_account_id(),
+            entities=[], embedding=vec, account_id=account_id,
         )
         return {
             "type":  m.type,
@@ -1842,8 +1848,8 @@ def _temperature_for(body: ChatIn) -> float | None:
 
 
 # ── THERE IS NO SECOND LANE ──────────────────────────────────────────────────
-# Mark 3 dropped a failed or over-cap turn onto a local Ollama CPU model. That
-# model is gone (Ollama is out of scope — AGENTS.md), so nothing is left to drop
+# The desktop version dropped a failed or over-cap turn onto a local Ollama CPU model. That
+# model is gone, so nothing is left to drop
 # to. Every path that used to fall back now emits ONE explicit error naming the
 # cause. Refusing loudly is the requirement; a turn that returns an empty reply
 # because its fallback quietly evaporated is the exact failure this project
@@ -1863,12 +1869,12 @@ _NOTICE_CAP = (
 
 
 @app.post("/chat", response_model=ChatOut)
-async def chat(body: ChatIn) -> ChatOut:
+async def chat(body: ChatIn, account_id: str = Depends(account_id_for)) -> ChatOut:
     """Non-streaming chat. Builds the same message array as /chat/stream.
-    OpenRouter/BYOK only. Mark 3 aggregated a local CPU turn when no provider
+    OpenRouter/BYOK only. The desktop version aggregated a local CPU turn when no provider
     matched; that lane is gone, so an unmatched model is a loud 503 rather than
     a silent downgrade to a different (weaker) model than the caller asked for."""
-    msgs, _, _ = await _build_chat_messages(body)
+    msgs, _, _ = await _build_chat_messages(body, account_id=account_id)
     if not body.model:
         body.model = chat_provider_registry.AUTO_MODEL_ID
     if body.model == chat_provider_registry.AUTO_MODEL_ID:
@@ -1907,7 +1913,7 @@ async def _may_spend_dep() -> None:
 
 
 @app.post("/chat/stream", dependencies=[Depends(_may_spend_dep)])
-async def chat_stream(body: ChatIn) -> StreamingResponse:
+async def chat_stream(body: ChatIn, account_id: str = Depends(account_id_for)) -> StreamingResponse:
     """Stream the reply as NDJSON. Each line is one JSON object:
         {"delta": "..."}                       — partial text chunk
         {"done": true, "model": "...", "memory_used": [...]} — terminal marker
@@ -1916,7 +1922,7 @@ async def chat_stream(body: ChatIn) -> StreamingResponse:
     Dispatch:
         - body.model must resolve to a chat-provider-registry provider
           (Anthropic / OpenAI / Gemini / OpenRouter); that provider streams.
-        - Mark 3 routed everything else to a local Ollama model. That lane is
+        - the desktop version routed everything else to a local Ollama model. That lane is
           gone, so an unresolved model, an over-cap turn, or an upstream outage
           each emit ONE explicit {"error": ...} line — never an empty stream.
 
@@ -1936,15 +1942,15 @@ async def chat_stream(body: ChatIn) -> StreamingResponse:
     # the RESOLVED model so the client sees what actually answered.
     if body.model == chat_provider_registry.AUTO_MODEL_ID:
         body.model = await _route_auto(body)
-    msgs, used, skills_used = await _build_chat_messages(body)
+    msgs, used, skills_used = await _build_chat_messages(body, account_id=account_id)
     temperature = _temperature_for(body)
     voice_cap = VOICE_REPLY_CHAR_CAP if body.voice_mode else None
 
     premium_name, premium = chat_provider_registry.provider_for_model(body.model)
 
-    # Budget guard (fail-closed). Mark 3 demoted an over-cap turn to the local
+    # Budget guard (fail-closed). The desktop version demoted an over-cap turn to the local
     # CPU model; with no lane to demote to, the turn is REFUSED before it can
-    # cost anything upstream — the killswitch shape M3 formalises.
+    # cost anything upstream — the killswitch shape.
     over_cap = premium is not None and not spend.guard_ok()
 
     async def gen():
@@ -1964,7 +1970,7 @@ async def chat_stream(body: ChatIn) -> StreamingResponse:
             return
 
         # --- the one lane: chat registry (OpenRouter / BYOK) ----------------
-        # Mark 3 nested this under `if premium is not None:` with a local
+        # The desktop version nested this under `if premium is not None:` with a local
         # fallback after it. The refusals above already returned for every case
         # that used to fall through, so the body is now unconditional.
         reply_chars = 0
@@ -1996,7 +2002,7 @@ async def chat_stream(body: ChatIn) -> StreamingResponse:
                 out_tok=reply_chars // 4,
                 mission_id=getattr(body, "mission_id", None),
             )
-            saved_memory = await _maybe_save_auto_memory(body)
+            saved_memory = await _maybe_save_auto_memory(body, account_id=account_id)
             if saved_memory:
                 yield json.dumps({"delta": _announce_text(saved_memory), "memory_added": saved_memory}) + "\n"
             t_done = time.monotonic()
@@ -2008,7 +2014,7 @@ async def chat_stream(body: ChatIn) -> StreamingResponse:
             )
             # Durable truncation guard — a length-stop is NEVER silent. The
             # client marks the message so the gremlin can't return unseen.
-            # (Mark 3 also read local-gemma's last_stop here; only the
+            # (The desktop version also read local-gemma's last_stop here; only the
             # registry's last_finish remains.)
             truncated = False
             try:
@@ -2027,7 +2033,7 @@ async def chat_stream(body: ChatIn) -> StreamingResponse:
                 "skills_used":  skills_used,
             }) + "\n"
         except chat_provider_registry.ProviderError:
-            # Billing/quota or any non-200. Mark 3 dropped to the local CPU
+            # Billing/quota or any non-200. The desktop version dropped to the local CPU
             # model here; nothing is left to drop to, so the turn ends with an
             # error. The MESSAGE stays opaque (no billing reason leaked,
             # honoring the opaque-billing rule) but it is never silent.
@@ -2464,7 +2470,7 @@ class NarratorIn(BaseModel):
 
 
 @app.post("/narrator/observe")
-async def narrator_observe(body: NarratorIn) -> dict:
+async def narrator_observe(body: NarratorIn, account_id: str = Depends(account_id_for)) -> dict:
     """Observer note for Nova's next turn. Requires OpenRouter to be configured."""
     provider = dispatch_provider_registry.get_provider()
     if provider is None:
@@ -2521,7 +2527,7 @@ async def narrator_observe(body: NarratorIn) -> dict:
                 m = await asyncio.to_thread(
                     MEMORY.add_memory, boundary_text,
                     type="profile", source="auto", confidence=0.9,
-                    entities=[], embedding=vec, account_id=_account_id(),
+                    entities=[], embedding=vec, account_id=account_id,
                 )
                 boundary_memory_id = m.id
                 print(f"[NARRATOR] boundary saved id={m.id}: {boundary_text!r}", flush=True)
@@ -2596,28 +2602,50 @@ def _save_permissions(d: dict[str, str], *, account_id: str) -> None:
     _write_permission_file(raw)
 
 
+def _forget_permissions(account_id: str) -> None:
+    raw = _read_permission_file()
+    if raw.pop(account_id, None) is not None:
+        _write_permission_file(raw)
+
+
+def _register_guest_purgers() -> None:
+    """Every store that files state under an account, so a guest's session can
+    be deleted completely. A store added later that is missing here would
+    survive the guest; tests/test_guest_sessions.py checks the list."""
+    from . import fs as fs_mod
+    from . import profile as profile_mod
+    from . import vault as vault_mod
+    from .agent import runtime as mission_rt
+    guest.register_purger("missions", lambda a: mission_rt.purge_account(account_id=a))
+    guest.register_purger("vault", vault_mod.purge_account)
+    guest.register_purger("workspace", fs_mod.purge_workspace)
+    guest.register_purger("memory", lambda a: MEMORY.purge_account(account_id=a))
+    guest.register_purger("profile", profile_mod.forget)
+    guest.register_purger("permissions", _forget_permissions)
+
+
 class ProfileIn(BaseModel):
     display_name: str | None = None
 
 
 @app.get("/profile")
-def profile_get() -> dict:
+def profile_get(account_id: str = Depends(account_id_for)) -> dict:
     from .profile import display_name
-    return {"display_name": display_name(_account_id())}
+    return {"display_name": display_name(account_id)}
 
 
 @app.put("/profile")
-def profile_set(body: ProfileIn) -> dict:
+def profile_set(body: ProfileIn, account_id: str = Depends(account_id_for)) -> dict:
     """Set the name Nova uses. An empty value clears it, and clearing is a
     supported outcome rather than an error — the persona has a neutral form."""
     from .profile import set_display_name
-    stored = set_display_name(_account_id(), body.display_name)
+    stored = set_display_name(account_id, body.display_name)
     return {"ok": True, "display_name": stored}
 
 
 @app.get("/nova/permissions")
-def nova_permissions_get() -> dict:
-    return {"permissions": _load_permissions(account_id=_account_id())}
+def nova_permissions_get(account_id: str = Depends(account_id_for)) -> dict:
+    return {"permissions": _load_permissions(account_id=account_id)}
 
 
 class PermissionPatch(BaseModel):
@@ -2626,8 +2654,7 @@ class PermissionPatch(BaseModel):
 
 
 @app.post("/nova/permissions")
-def nova_permissions_set(body: PermissionPatch) -> dict:
-    account_id = _account_id()
+def nova_permissions_set(body: PermissionPatch, account_id: str = Depends(account_id_for)) -> dict:
     d = _load_permissions(account_id=account_id)
     if body.level == "revoke":
         d.pop(body.tool, None)
@@ -2640,8 +2667,7 @@ def nova_permissions_set(body: PermissionPatch) -> dict:
 
 
 @app.delete("/nova/permissions/{tool}")
-def nova_permissions_delete(tool: str) -> dict:
-    account_id = _account_id()
+def nova_permissions_delete(tool: str, account_id: str = Depends(account_id_for)) -> dict:
     d = _load_permissions(account_id=account_id)
     d.pop(tool, None)
     _save_permissions(d, account_id=account_id)
@@ -2670,13 +2696,13 @@ class MemorySearchIn(BaseModel):
 
 
 @app.get("/memory")
-async def memory_list() -> dict:
-    items = await asyncio.to_thread(partial(MEMORY.list_memories, account_id=_account_id()))
+async def memory_list(account_id: str = Depends(account_id_for)) -> dict:
+    items = await asyncio.to_thread(partial(MEMORY.list_memories, account_id=account_id))
     return {"items": [m.to_dict() for m in items]}
 
 
 @app.get("/memory/embeddings/status")
-async def memory_embeddings_status() -> dict:
+async def memory_embeddings_status(account_id: str = Depends(account_id_for)) -> dict:
     """How much of the memory store is recallable by meaning, not just listed.
 
     "Embeddings are on" and "your memories are embedded" are different facts.
@@ -2684,14 +2710,14 @@ async def memory_embeddings_status() -> dict:
     them is real and was invisible.
     """
     from .providers.embeddings import active_model, status
-    cov = await asyncio.to_thread(partial(MEMORY.embedding_coverage, account_id=_account_id()), active_model())
+    cov = await asyncio.to_thread(partial(MEMORY.embedding_coverage, account_id=account_id), active_model())
     return {"provider": status(), **cov,
             "hint": None if cov["needing_backfill"] == 0 else
                     "POST /memory/reindex to embed the rest"}
 
 
 @app.post("/memory/reindex")
-async def memory_reindex() -> dict:
+async def memory_reindex(account_id: str = Depends(account_id_for)) -> dict:
     """Embed every memory that has no usable vector.
 
     Nothing else does this. Memories written while no provider was configured —
@@ -2707,7 +2733,7 @@ async def memory_reindex() -> dict:
 
     done = 0
     while True:
-        batch = await asyncio.to_thread(partial(MEMORY.memories_needing_embedding, account_id=_account_id()), model, 128)
+        batch = await asyncio.to_thread(partial(MEMORY.memories_needing_embedding, account_id=account_id), model, 128)
         batch = [(mid, t) for mid, t in batch if (t or "").strip()]
         if not batch:
             break
@@ -2716,7 +2742,7 @@ async def memory_reindex() -> dict:
         except EmbedError as e:
             raise HTTPException(status_code=503, detail=str(e))
         for (mid, _), v in zip(batch, vecs):
-            await asyncio.to_thread(partial(MEMORY.set_embedding, account_id=_account_id()), mid, v, model)
+            await asyncio.to_thread(partial(MEMORY.set_embedding, account_id=account_id), mid, v, model)
         done += len(batch)
         if len(batch) < 128:
             break
@@ -2724,7 +2750,7 @@ async def memory_reindex() -> dict:
 
 
 @app.post("/memory")
-async def memory_create(body: MemoryIn) -> dict:
+async def memory_create(body: MemoryIn, account_id: str = Depends(account_id_for)) -> dict:
     if body.type not in ("profile", "episodic"):
         raise HTTPException(status_code=400, detail="type must be 'profile' or 'episodic'")
     text = body.text.strip()
@@ -2737,13 +2763,13 @@ async def memory_create(body: MemoryIn) -> dict:
     m = await asyncio.to_thread(
         MEMORY.add_memory, text,
         type=body.type, source="user", confidence=body.confidence,
-        entities=body.entities, embedding=vec, account_id=_account_id(),
+        entities=body.entities, embedding=vec, account_id=account_id,
     )
     return {"item": m.to_dict()}
 
 
 @app.patch("/memory/{mid}")
-async def memory_update(mid: str, body: MemoryPatch) -> dict:
+async def memory_update(mid: str, body: MemoryPatch, account_id: str = Depends(account_id_for)) -> dict:
     # If text changed, re-embed.
     new_vec = None
     if body.text is not None and body.text.strip():
@@ -2754,7 +2780,7 @@ async def memory_update(mid: str, body: MemoryPatch) -> dict:
     m = await asyncio.to_thread(
         MEMORY.update_memory, mid,
         text=body.text, type=body.type, confidence=body.confidence,
-        entities=body.entities, embedding=new_vec, account_id=_account_id(),
+        entities=body.entities, embedding=new_vec, account_id=account_id,
     )
     if not m:
         raise HTTPException(status_code=404, detail=f"memory {mid} not found")
@@ -2762,24 +2788,24 @@ async def memory_update(mid: str, body: MemoryPatch) -> dict:
 
 
 @app.delete("/memory/{mid}")
-async def memory_delete(mid: str) -> dict:
-    ok = await asyncio.to_thread(partial(MEMORY.delete_memory, account_id=_account_id()), mid)
+async def memory_delete(mid: str, account_id: str = Depends(account_id_for)) -> dict:
+    ok = await asyncio.to_thread(partial(MEMORY.delete_memory, account_id=account_id), mid)
     if not ok:
         raise HTTPException(status_code=404, detail=f"memory {mid} not found")
     return {"ok": True}
 
 
 @app.post("/memory/search")
-async def memory_search(body: MemorySearchIn) -> dict:
+async def memory_search(body: MemorySearchIn, account_id: str = Depends(account_id_for)) -> dict:
     try:
         qvec = await embed_text(body.query, input_type="query")
     except EmbedError as e:
         raise HTTPException(status_code=503, detail=str(e))
-    hits = await asyncio.to_thread(partial(MEMORY.search_memories, account_id=_account_id()), qvec, body.limit, 0.4)
+    hits = await asyncio.to_thread(partial(MEMORY.search_memories, account_id=account_id), qvec, body.limit, 0.4)
     return {"items": [m.to_dict() for m in hits]}
 
 
-# Mark 3 kept a `_ = OllamaProvider` line here to quiet an unused-import
+# The desktop version kept a `_ = OllamaProvider` line here to quiet an unused-import
 # warning. Both the import and the provider are gone.
 
 
@@ -3327,7 +3353,7 @@ async def stocks_summary(body: SummaryIn) -> SummaryOut:
     headers = {
         "Authorization": f"Bearer {or_key}",
         "HTTP-Referer": "http://127.0.0.1:1420",
-        "X-Title": "Infinity (Reactor Mk3)",
+        "X-Title": "Infinity",
         "content-type": "application/json",
     }
 
@@ -4043,10 +4069,8 @@ def main() -> None:
     import uvicorn
 
     parser = argparse.ArgumentParser(prog=SERVICE_NAME)
-    # Bind ALL interfaces by default so the backend answers on 127.0.0.1 AND the
-    # tailnet IP from one process. The auth gate (require_auth bearer) is what
-    # protects it, not the bind address — binding tailnet-only used to false-kill
-    # run.ps1's loopback health check. INFINITY_BIND_HOST can still override.
+    # Bind ALL interfaces by default. The door and the auth gate are what protect
+    # the app, not the bind address. INFINITY_BIND_HOST can override.
     bind_default = os.environ.get("INFINITY_BIND_HOST", "0.0.0.0")
     parser.add_argument("--host", default=bind_default)
     parser.add_argument("--port", type=int, default=8000)
@@ -4054,7 +4078,7 @@ def main() -> None:
 
     print(f"Backend listening on http://{args.host}:{args.port}")
     if args.host not in ("127.0.0.1", "localhost"):
-        print(f"Tailnet access:      http://{args.host}:{args.port}")
+        print(f"Network access:      http://{args.host}:{args.port}")
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

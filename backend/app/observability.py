@@ -1,8 +1,7 @@
 """Error reporting, with scrubbing configured BEFORE it can ever be switched on.
 
-`MARK4.md` makes the order a gate: "Sentry, with PII scrubbing enabled *before*
-it is switched on." The reason is that the first event is the one you cannot
-un-send. A product whose pitch is "nobody sees what they aren't allowed to see"
+Scrubbing is configured before reporting can be switched on, because the
+first event is the one you cannot un-send. A product whose pitch is "nobody sees what they aren't allowed to see"
 cannot ship an error reporter that mails message bodies and document text to a
 third party.
 

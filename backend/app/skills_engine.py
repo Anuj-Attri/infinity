@@ -33,12 +33,12 @@ from typing import Any
 import numpy as np
 from .paths import data_path
 
-# Mark 3 looked at the REPO ROOT (parents[2]). The image only copies backend/,
+# The desktop version looked at the REPO ROOT (parents[2]). The image only copies backend/,
 # so skills at the repo root simply are not in the container — the engine finds
 # nothing, indexes 0, and every turn silently loses its skill blocks. Same shape
 # as the `reactor` package relocation. They live under backend/ now: parents[1].
 #
-# TODO(M4): skills are account-owned state per DIRECTION's ACCOUNT OWNERSHIP
+# TODO: skills are account-owned state under the ACCOUNT OWNERSHIP
 # invariant. This directory is the built-in set; a user's own skills become rows
 # with an owner column rather than files on a shared disk.
 _REPO_ROOT = Path(__file__).resolve().parents[2]     # <repo> — runtime state (.data)

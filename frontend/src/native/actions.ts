@@ -1,7 +1,7 @@
 // Copy / open seams.
 //
-// Mark 3 carried three branches here — Capacitor (Android WebView), Tauri
-// (desktop shell), and plain browser — because it shipped as all three. Mark 4
+// The desktop version carried three branches here — Capacitor (Android WebView), Tauri
+// (desktop shell), and plain browser — because it shipped as all three. this version
 // is a web app, so only the browser path remains.
 //
 // The clipboard fallback stays, and it is not paranoia: `navigator.clipboard`

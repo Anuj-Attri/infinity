@@ -35,24 +35,34 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Agent + session scratch (Mark 3 lesson: these leak personal context)
+# Agent and editor session scratch. These can hold personal context.
 .claude/
 .cursor/
 *.scratchpad.md
 
-# The shared agent brief. Gitignored by owner decision: all agents work in this
-# one workspace, and it should never enter history.
+# Working notes for contributors' tools. Never part of the product.
 AGENTS.md
+CLAUDE.md
+PLAN*.md
 NOTES.local.md
 
 # e2e artifacts — screenshots and reports are per-run, not source
 frontend/e2e/shots/
 
-# Browser profiles. A Playwright script with a Windows path lost its backslashes
-# and created a literal "UsersuserAppData..." directory here, which then got
-# committed — 998 files including Cookies and Login Data. Never again, whatever
-# the leading path looks like.
-Usersuser*/
-**/UsersuserAppData*/
+# Browser profiles. A Windows path that loses its backslashes turns into a
+# literal "Users<name>AppData..." directory here, holding cookies and saved
+# logins. Never commit one, whatever the leading path looks like.
+Users*AppData*/
+**/Users*AppData*/
 */User Data/
 **/Default/Network/Cookies
+
+# Internal/dev docs. Kept on disk for the people building this; not shipped to
+# users. The public surface is README.md and nothing else.
+docs/
+*.local.md
+PERSONA_ARCHIVE.local.md
+scripts/dev-backend.sh
+
+# Unused media, not part of the app.
+frontend/src/assets/thumbsup_egg.mp4

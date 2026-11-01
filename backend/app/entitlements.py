@@ -1,10 +1,5 @@
 """The killswitch — one place that can refuse anything which costs money.
 
-The owner's requirement, and the reason it moved earlier than `MARK4.md` had it:
-
-> "any versions released right now should be protected with killswitch cause i
->  want to save this app."
-
 WHY IT IS A REQUEST-PATH CHECK AND NOT A CRON. A scheduled job that disables an
 account runs minutes later, and it fails silently when the scheduler dies — so
 the one control that is supposed to stop a runaway bill is the control most
@@ -14,7 +9,7 @@ window.
 
 WHY IT IS READ FROM DISK EVERY TIME. Caching the flag for even sixty seconds
 means "flip the switch" does not mean "it is off"; it means "it is off soon".
-The definition of done for M3 is that the NEXT request refuses. A SQLite read of
+The requirement is that the NEXT request refuses. A SQLite read of
 one indexed row is microseconds and this runs once per request, not per token.
 
 WHAT IT DELIBERATELY DOES NOT BLOCK. Signing in, reading data you already have,
@@ -23,7 +18,7 @@ crashed is one nobody dares use, and the point is to stop spend, not to deny the
 owner access to their own instance while they work out what happened.
 
 STORAGE. SQLite under DATA_DIR, keyed by account id. It moves to Postgres with
-the rest of the state at M4 — `check()` is the only thing anything else calls,
+the rest of the state later — `check()` is the only thing anything else calls,
 so that swap touches this file alone.
 """
 
@@ -110,7 +105,7 @@ def assert_may_spend() -> None:
     the request gate is then a nicety that produces a clean 403 instead of a
     failure part-way through a turn.
 
-    Single-tenant for now, so it resolves the one account itself. At M4 this
+    Single-tenant for now, so it resolves the one account itself. Later this
     takes an explicit account, like everything else that touches state.
     """
     from .accounts import SINGLE_TENANT   # lazy: accounts imports this module

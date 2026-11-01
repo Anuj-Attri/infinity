@@ -30,7 +30,7 @@ import pytest
 _DEPLOYMENT_ENV = (
     "ACCESS_TOKEN",            # gatekeeper: locks the whole app
     "SETUP_TOKEN",             # first-run claim gate
-    "MARK4_DEV_ACCOUNT",       # resolves every request to one account
+    "INFINITY_DEV_ACCOUNT",       # resolves every request to one account
     "ALLOW_PLAINTEXT_KEYSTORE",
     "TRUST_PROXY_HEADERS",
     # Railway injects these into the container. A test must not inherit them

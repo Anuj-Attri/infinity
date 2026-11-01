@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="description" content="An AI workspace that cites its sources and enforces who can see what." />
     <!-- interactive-widget=resizes-content: a mobile keyboard RESIZES the layout
          viewport instead of overlaying it, so the bottom command bar rides above
@@ -16,6 +17,10 @@
 
   <body>
     <div id="root"></div>
+    <!-- Served by the backend. In guest mode it points the app's browser
+         storage at per-tab storage before any app code runs, so nothing a
+         visitor does outlives the tab. Classic and blocking on purpose. -->
+    <script src="/runtime-config.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

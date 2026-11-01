@@ -33,7 +33,7 @@ FAKE = {
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("MARK4_DEV_ACCOUNT", raising=False)
+    monkeypatch.delenv("INFINITY_DEV_ACCOUNT", raising=False)
     for k, v in FAKE.items():
         monkeypatch.setenv(k, v)
     import app.paths, app.auth, app.admin, app.main

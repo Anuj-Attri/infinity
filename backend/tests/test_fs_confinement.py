@@ -16,7 +16,7 @@ shared by every user rather than scoped to any of them.
 
 The replacement holds one line: resolve the path, then require the result to be
 inside WORKSPACE_ROOT. The tests below are mostly that attack chain, written down
-so it cannot come back — the module is scheduled to be reworked again at M6 for
+so it cannot come back — the module is scheduled to be reworked again for
 per-account storage, and this is what must survive that.
 """
 

@@ -1,6 +1,6 @@
 // Touch pan + pinch-zoom for the canvas.
 //
-// Ported from Mark 3's `src/mobile/useCanvasTouch.ts`. Without it the canvas is
+// Ported from the desktop version's `src/mobile/useCanvasTouch.ts`. Without it the canvas is
 // immovable on any touch device: Dashboard's only pan/zoom drivers are `wheel`
 // and `mousedown/mousemove/mouseup`, all mouse-only, and the escape hatches are
 // closed — `.dash-canvas` is `overflow: hidden` and index.html sets
@@ -12,7 +12,7 @@
 //   1 finger  -> pan
 //   2 fingers -> pinch-zoom anchored on the gesture midpoint, plus pan
 //
-// TWO ADAPTATIONS from Mark 3, both load-bearing here and not needed there,
+// TWO ADAPTATIONS from the desktop version, both load-bearing here and not needed there,
 // where this was mounted by a mobile-only shell that had no mouse handlers and
 // no draggable tiles underneath it:
 //

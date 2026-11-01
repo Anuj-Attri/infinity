@@ -29,7 +29,7 @@ router = APIRouter(prefix="/chat-providers", tags=["chat-providers"])
 
 @router.get("/status")
 async def status() -> dict[str, Any]:
-    # No "local" entry. Mark 3 injected one here AFTER chat.status() returned,
+    # No "local" entry. The desktop version injected one here AFTER chat.status() returned,
     # reporting connected: true without probing anything — so removing the local
     # lane from the provider registry would not have removed it from this API
     # response, and the picker would still offer a model that cannot exist.

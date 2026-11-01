@@ -283,6 +283,20 @@ class MemoryStore:
         self._conn.commit()
         return cur.rowcount > 0
 
+    def purge_account(self, *, account_id: str) -> int:
+        """Delete every row this account owns, across all three tables.
+
+        Used when a guest session ends. Returns the number of rows removed so
+        the caller can log it; nothing here is soft-deleted.
+        """
+        n = 0
+        for table in ("memories", "doc_chunks", "turns"):
+            cur = self._conn.execute(
+                f"DELETE FROM {table} WHERE owner_account_id = ?", (account_id,))
+            n += cur.rowcount
+        self._conn.commit()
+        return n
+
     def list_memories(self, *, account_id: str) -> list[Memory]:
         rows = self._conn.execute(
             "SELECT id, type, text, source, confidence, entities, created_at, updated_at"

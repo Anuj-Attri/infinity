@@ -11,7 +11,7 @@ who benefits sees a tool call that simply did not stop to ask, which is
 indistinguishable from one they approved themselves. Nothing in the UI, the
 audit line, or the model's output marks it as borrowed consent.
 
-AGENTS.md calls the MCP consent gate the firewall between the model and anything
+The MCP consent gate is the firewall between the model and anything
 that acts, and says it ports verbatim and is never softened. A shared grant store
 softens it without touching a line of gate code.
 """
@@ -30,7 +30,7 @@ B = "acct-bob"
 @pytest.fixture
 def main(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("MARK4_DEV_ACCOUNT", raising=False)
+    monkeypatch.delenv("INFINITY_DEV_ACCOUNT", raising=False)
     import app.paths, app.auth, app.main
     importlib.reload(app.paths)
     importlib.reload(app.auth)
@@ -102,4 +102,4 @@ def test_the_routes_use_the_caller_s_account(main):
     import inspect
     for name in ("nova_permissions_get", "nova_permissions_set", "nova_permissions_delete"):
         src = inspect.getsource(getattr(main, name))
-        assert "_account_id()" in src, f"{name} does not resolve the caller's account"
+        assert "Depends(account_id_for)" in src, f"{name} does not resolve the caller's account"

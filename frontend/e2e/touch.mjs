@@ -1,6 +1,6 @@
 // The canvas must be movable with fingers, not just a mouse.
 //
-// Mark 4 lost Mark 3's touch driver, so `wheel` and `mousedown` were the only
+// The web port lost the desktop version's touch driver, so `wheel` and `mousedown` were the only
 // pan/zoom paths — both mouse-only. On a phone or tablet the field was frozen at
 // zoom 1.0 and anything outside the opening viewport was unreachable, including
 // the Browser tile whose default position is 1120px down. Tiles still dragged,

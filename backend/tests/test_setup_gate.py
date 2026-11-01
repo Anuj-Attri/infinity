@@ -3,7 +3,7 @@
 There is no credential yet, so /auth/setup is unauthenticated by nature. On a
 laptop reachable only from loopback that is fine. On a public URL it is an
 account-takeover endpoint: whoever POSTs first sets the master password, mints
-themselves a device token, and locks the owner out of their own deployment. It
+themselves a device token, and locks the operator out of their own deployment. It
 only 409s once a password EXISTS, which is too late.
 
 SETUP_TOKEN is the out-of-band proof that the caller controls the deployment.
@@ -28,7 +28,7 @@ def app_with(monkeypatch, tmp_path):
     """
     def _build(**env: str):
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
-        for k in ("SETUP_TOKEN", "MARK4_DEV_ACCOUNT", "ACCESS_TOKEN"):
+        for k in ("SETUP_TOKEN", "INFINITY_DEV_ACCOUNT", "ACCESS_TOKEN"):
             monkeypatch.delenv(k, raising=False)
         for k, v in env.items():
             monkeypatch.setenv(k, v)

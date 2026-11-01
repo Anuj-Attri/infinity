@@ -25,7 +25,7 @@ from typing import Any
 # inputSchema enum, so the model is told each one is a thing it can open. A name
 # with no tile behind it is a promise the app cannot keep: the user approves a
 # consent prompt, nothing appears, and the model reports success anyway.
-# "blueprint" was exactly that — BlueprintTile is on Mark 4's dropped list, so
+# "blueprint" was exactly that — BlueprintTile was dropped, so
 # spawn() fell through and the caller still got "blueprint panel opened".
 PANELS = ["usage", "status", "model", "weather", "portfolio", "news",
           "tasks", "notes", "vault", "chat",

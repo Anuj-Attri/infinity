@@ -170,3 +170,12 @@ def prune(older_than_days: float = 30.0, *, account_id: str) -> int:
         )
         db.commit()
         return cur.rowcount
+
+
+def purge_account(*, account_id: str) -> int:
+    """Delete every mission this account owns, whatever its status."""
+    with _LOCK:
+        db = _db()
+        cur = db.execute("DELETE FROM missions WHERE account_id=?", (account_id,))
+        db.commit()
+        return cur.rowcount

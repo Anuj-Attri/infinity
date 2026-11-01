@@ -439,8 +439,7 @@ function AppInner() {
 
     // /remember · /feed — quick-add to the Vision: text or a pasted link is
     // ingested into the SAME shared backend index; the brain refreshes live and
-    // the new node appears. Cross-device (the phone posts to the desktop backend
-    // over the tailnet). Fail-closed.
+    // the new node appears. Fail-closed.
     if (!opts.suppressUserTurn && /^\/(remember|feed)(?:\s|$)/i.test(text.trim())) {
       setTranscript((prev) => [...prev, { role: "user", text, ts: Date.now() }]);
       const body = text.trim().replace(/^\/(remember|feed)\s*/i, "").trim();

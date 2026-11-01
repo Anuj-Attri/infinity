@@ -1,6 +1,6 @@
 """Anthropic Claude provider — for hard turns the local model shouldn't take.
 
-API key sourced from `ANTHROPIC_API_KEY` (reused from the old Reactor `.env`).
+API key sourced from `ANTHROPIC_API_KEY`.
 Not implemented.
 """
 

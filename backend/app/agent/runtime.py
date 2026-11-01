@@ -157,6 +157,24 @@ def stop(mission_id: str, *, account_id: str) -> bool:
     return True
 
 
+def purge_account(*, account_id: str) -> int:
+    """Cancel this account's live missions and delete all of them.
+
+    CANCEL, not stop. A stopped mission still runs its completion hook, and
+    that hook files the result into the vault, which would recreate data for an
+    account that has just been deleted.
+    """
+    mine = [mid for mid, st in _states.items() if st.account_id == account_id]
+    for mid in mine:
+        task = _running.pop(mid, None)
+        if task is not None:
+            task.cancel()
+        _stops.pop(mid, None)
+        _subscribers.pop(mid, None)
+        _states.pop(mid, None)
+    return store.purge_account(account_id=account_id)
+
+
 def running_count() -> int:
     return len(_running)
 

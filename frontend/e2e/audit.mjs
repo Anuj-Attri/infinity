@@ -114,7 +114,7 @@ for (const [file, raw] of FILES) {
   for (const m of src.matchAll(/fetch\(\s*[`"']((?:https?:)?\/\/[^`"'\s]+)/g)) {
     fail(`${file} fetches a third party directly: ${m[1].slice(0, 60)}\n    Route it through the backend.`);
   }
-  // A hardcoded ROUTABLE host is how Mark 3 shipped a Tailscale IP that worked
+  // A hardcoded ROUTABLE host is how the desktop version shipped a Tailscale IP that worked
   // for exactly one person, over plain http, which has no secure context.
   //
   // Loopback is deliberately allowed: api.ts falls back to 127.0.0.1:8787 for

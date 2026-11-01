@@ -1,6 +1,6 @@
 """Where runtime state lives. One answer, in one place.
 
-Mark 3 computed this twelve separate times — `parents[2] / ".data"` in most
+The desktop version computed this twelve separate times — `parents[2] / ".data"` in most
 modules, `parents[3]` in the keystore — which meant there was no single thing to
 change when the answer changed. It has now changed.
 
@@ -13,9 +13,9 @@ one variable to find it:
     DATA_DIR=/data      # a Railway/Fly/Docker volume mount point
 
 Unset, it falls back to `<repo>/.data`, which is what local development wants
-and what Mark 3 always did.
+and what the desktop version always did.
 
-This is a stopgap with a known end: at M4 this state becomes Postgres rows with
+This is a stopgap with a known end: later this state becomes Postgres rows with
 `org_id` and `owner_account_id`, because a shared filesystem cannot express
 "belongs to exactly one account" no matter where it is mounted.
 """

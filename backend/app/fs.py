@@ -58,7 +58,7 @@ used to probe the container's filesystem layout.
 
 PER-ACCOUNT since 2026-08-23. Code files are FILES, so ownership has to be a
 directory: a shared workspace means two accounts editing `main.py` edit the SAME
-file, and every path check here would pass while the content was shared. M6 moves
+file, and every path check here would pass while the content was shared. Cloud storage later moves
 this to cloud storage; the per-account SHAPE is already what it needs to be.
 """
 
@@ -72,7 +72,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .paths import data_path
@@ -115,6 +115,15 @@ def workspace_dir(account_id: str) -> Path:
     d = WORKSPACE_ROOT / account_id
     d.mkdir(parents=True, exist_ok=True)
     return d.resolve()
+
+
+def purge_workspace(account_id: str) -> bool:
+    """Delete one account's whole workspace directory. True if one existed."""
+    d = WORKSPACE_ROOT / account_id
+    if not d.exists():
+        return False
+    shutil.rmtree(d)
+    return True
 
 
 _flat_migrated = False
@@ -204,15 +213,15 @@ def _safe_resolve(raw: str | None, *, account_id: str) -> Path:
     return p
 
 
-def _account_id_dep() -> str:
+def _account_id_dep(request: Request) -> str:
     """Whose workspace this request touches.
 
     A dependency rather than a plain argument: FastAPI would read a bare
     `account_id: str` off the QUERY STRING, letting the caller name the account
-    whose files they wanted — the exact opposite of the point.
+    whose files they wanted, which is the exact opposite of the point.
     """
-    from .accounts import SINGLE_TENANT
-    return SINGLE_TENANT.id
+    from .accounts import account_id_for
+    return account_id_for(request)
 
 
 def _assert_inside(p: Path, *, account_id: str) -> None:

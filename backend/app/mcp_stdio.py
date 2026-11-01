@@ -24,7 +24,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 _PROTOCOL = "2025-06-18"
-_CLIENT_INFO = {"name": "Infinity (Reactor Mk3)", "version": "1.0"}
+_CLIENT_INFO = {"name": "Infinity", "version": "1.0"}
 
 # First request after spawn may include an npx package download.
 _SPAWN_TIMEOUT = 120.0

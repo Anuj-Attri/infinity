@@ -1,13 +1,13 @@
 """Line-aware document chunking.
 
-Lifted verbatim from Mark 3's `rag.py`, which is retired — the Vault is the one
+Lifted verbatim from the desktop version's `rag.py`, which is retired — the Vault is the one
 knowledge base. The chunker itself was never the problem with that module and it
 encodes a real lesson, so it moves here rather than dying with its old home.
 
 `session_overview.py` imported it from `rag.py` even after that router was
 unmounted, which is how a retired module stays alive by accident.
 
-`retrieval.ingest_text` (M5) is the other caller: chunking is the write half of
+`retrieval.ingest_text`  is the other caller: chunking is the write half of
 retrieval, and both halves should agree on what a chunk is.
 """
 
@@ -76,5 +76,5 @@ def chunk_text(text: str) -> list[str]:
     return [c for c in chunks if c]
 
 
-# Mark 3's name, kept so lifted call sites do not all have to change at once.
+# the desktop version's name, kept so lifted call sites do not all have to change at once.
 _chunk = chunk_text

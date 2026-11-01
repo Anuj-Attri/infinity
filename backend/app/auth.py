@@ -1,9 +1,7 @@
 """Device authentication layer.
 
-Two-factor model:
-  1. Tailnet membership — the backend binds to a Tailscale IP, so only
-     devices on the tailnet can reach it at all. (Enforced by the bind
-     address in main.py / run.ps1, not here.)
+Two layers:
+  1. The door (gatekeeper.py) decides whether a caller reaches the app at all.
   2. Master password + long-lived per-device tokens — THIS module.
 
 Flow:
