@@ -221,6 +221,8 @@ def test_no_outbound_request_bypasses_the_ssrf_guard():
         "mcp_client.py":  "calls _assert_safe_url before every _rpc",
         "chat.py":        "fixed provider endpoints (OpenRouter/Anthropic/OpenAI/Gemini)",
         "dispatch.py":    "fixed OpenRouter endpoint",
+        "local.py":       "LOCAL_MODEL_URL from the operator's environment, never from "
+                          "a request; it must reach localhost, which the guard refuses",
         "main.py":        "fixed third-party APIs (weather, news, stocks)",
         "embed.py":       "no outbound of its own; forwards to providers/embeddings.py",
         "embeddings.py":  "fixed Voyage endpoint (VOYAGE_URL is a module constant, "

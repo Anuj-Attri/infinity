@@ -104,6 +104,7 @@ from pydantic import BaseModel  # noqa: E402
 
 from . import auth as auth_layer  # noqa: E402
 from . import guest  # noqa: E402
+from .providers import local as local_model  # noqa: E402
 from .accounts import NotAuthenticated, account_id_for
 from .entitlements import Killswitched, assert_may_spend  # noqa: E402
 
@@ -1854,44 +1855,60 @@ def _temperature_for(body: ChatIn) -> float | None:
 # cause. Refusing loudly is the requirement; a turn that returns an empty reply
 # because its fallback quietly evaporated is the exact failure this project
 # keeps paying for.
-_NO_LANE = (
-    "No model lane available for this turn — the hosted build has no local "
-    "fallback. Check the OpenRouter connection in Settings → Connectors."
-)
-_NOTICE_OUTAGE = (
-    "OpenRouter is unreachable and there is no local fallback in the hosted "
-    "build. Nothing was generated. Retry in a moment."
-)
-_NOTICE_CAP = (
-    "Over the monthly OpenRouter spend cap — this turn was refused before it "
-    "cost anything upstream. Raise the cap in the Usage tile."
-)
+# What a user sees when no model can answer. Deliberately generic: the reason
+# (out of credit, usage limit, outage) is the operator's business, and the
+# server log carries it. Never names the upstream provider.
+_NO_LANE = "Model unavailable right now. Try again later."
+_NOTICE_OUTAGE = "Model unavailable right now. Nothing was generated. Try again in a moment."
+_NOTICE_CAP = "Model unavailable right now. Try again later."
 
 
 @app.post("/chat", response_model=ChatOut)
 async def chat(body: ChatIn, account_id: str = Depends(account_id_for)) -> ChatOut:
     """Non-streaming chat. Builds the same message array as /chat/stream.
-    OpenRouter/BYOK only. The desktop version aggregated a local CPU turn when no provider
-    matched; that lane is gone, so an unmatched model is a loud 503 rather than
-    a silent downgrade to a different (weaker) model than the caller asked for."""
+    When the hosted model cannot answer (spend cap, out of credit, outage), a
+    configured local model answers instead; with none configured, a generic 503."""
     msgs, _, _ = await _build_chat_messages(body, account_id=account_id)
     if not body.model:
         body.model = chat_provider_registry.AUTO_MODEL_ID
     if body.model == chat_provider_registry.AUTO_MODEL_ID:
         body.model = await _route_auto(body)
     premium_name, premium = chat_provider_registry.provider_for_model(body.model)
+    temperature = _temperature_for(body)
+
+    async def local_or_refuse(reason: str) -> ChatOut:
+        if not local_model.configured():
+            raise HTTPException(status_code=503, detail=_NO_LANE)
+        print(f"[chat] falling back to the local model ({reason})", flush=True)
+        try:
+            parts = [p async for p in local_model.stream_chat(msgs, temperature=temperature)]
+        except local_model.LocalModelError as e:
+            print(f"[chat] local model failed: {e}", flush=True)
+            raise HTTPException(status_code=503, detail=_NO_LANE)
+        if not "".join(parts).strip():
+            print("[chat] local model returned no visible text", flush=True)
+            raise HTTPException(status_code=503, detail=_NO_LANE)
+        return ChatOut(reply="".join(parts), model=local_model.model_name())
+
     if premium is None:
-        print(f"[chat] no provider for model={body.model!r} — refusing", flush=True)
-        raise HTTPException(status_code=503, detail=_NO_LANE)
+        print(f"[chat] no provider for model={body.model!r}", flush=True)
+        return await local_or_refuse("no hosted provider")
+    if not spend.guard_ok():
+        print(f"[chat] over the monthly spend cap (model={body.model!r})", flush=True)
+        return await local_or_refuse("spend cap reached")
     parts: list[str] = []
     try:
         async for ch in premium.stream(
             model=body.model or "", messages=msgs,
-            no_think=body.no_think, temperature=_temperature_for(body),
+            no_think=body.no_think, temperature=temperature,
         ):
             parts.append(ch)
     except chat_provider_registry.ProviderError:
-        raise HTTPException(status_code=503, detail=chat_provider_registry.MODEL_UNAVAILABLE)
+        print(f"[chat] provider error model={body.model!r}", flush=True)
+        return await local_or_refuse("hosted provider refused")
+    except httpx.HTTPError as e:
+        print(f"[chat] provider unreachable ({type(e).__name__}: {e})", flush=True)
+        return await local_or_refuse("hosted provider unreachable")
     return ChatOut(reply="".join(parts), model=body.model or "")
 
 
@@ -1958,15 +1975,49 @@ async def chat_stream(body: ChatIn, account_id: str = Depends(account_id_for)) -
         saved_memory: dict | None = None
         t_first: list[float] = []   # populated on first chunk; list so the closure can mutate it
 
-        # --- refusals (no lane) ----------------------------------------------
+        async def local_lane(reason: str, fail_msg: str):
+            """Answer from the local model, labelled as such, or fail generically.
+
+            Only ever reached before the hosted model produced any text, so a
+            reply is never half one model and half another.
+            """
+            if not local_model.configured():
+                yield json.dumps({"error": fail_msg}) + "\n"
+                return
+            print(f"[chat] falling back to the local model ({reason})", flush=True)
+            got = 0
+            try:
+                async for piece in local_model.stream_chat(msgs, temperature=temperature):
+                    got += len(piece)
+                    yield json.dumps({"delta": piece}) + "\n"
+            except local_model.LocalModelError as e:
+                print(f"[chat] local model failed: {e}", flush=True)
+                yield json.dumps({"error": fail_msg if not got
+                                  else "Chat stream interrupted."}) + "\n"
+                return
+            if not got:
+                # A reasoning model can spend everything on thinking and send no
+                # visible text. An empty reply must not look like an answer.
+                print("[chat] local model returned no visible text", flush=True)
+                yield json.dumps({"error": fail_msg}) + "\n"
+                return
+            yield json.dumps({
+                "done": True, "model": local_model.model_name(), "provider": "local",
+                "fallback": "local", "truncated": False,
+                "memory_used": memory_used, "memory_added": None,
+                "skills_used": skills_used,
+            }) + "\n"
+
+        # --- refusals: the hosted model cannot take this turn ----------------
         if over_cap:
-            print(f"[chat] refused: over the monthly spend cap "
-                  f"(model={body.model!r})", flush=True)
-            yield json.dumps({"error": _NOTICE_CAP}) + "\n"
+            print(f"[chat] over the monthly spend cap (model={body.model!r})", flush=True)
+            async for line in local_lane("spend cap reached", _NOTICE_CAP):
+                yield line
             return
         if premium is None:
-            print(f"[chat] refused: no provider for model={body.model!r}", flush=True)
-            yield json.dumps({"error": _NO_LANE}) + "\n"
+            print(f"[chat] no provider for model={body.model!r}", flush=True)
+            async for line in local_lane("no hosted provider", _NO_LANE):
+                yield line
             return
 
         # --- the one lane: chat registry (OpenRouter / BYOK) ----------------
@@ -2033,13 +2084,16 @@ async def chat_stream(body: ChatIn, account_id: str = Depends(account_id_for)) -
                 "skills_used":  skills_used,
             }) + "\n"
         except chat_provider_registry.ProviderError:
-            # Billing/quota or any non-200. The desktop version dropped to the local CPU
-            # model here; nothing is left to drop to, so the turn ends with an
-            # error. The MESSAGE stays opaque (no billing reason leaked,
-            # honoring the opaque-billing rule) but it is never silent.
+            # Out of credit, rate limited, or any other non-200. The message
+            # stays generic (no billing reason reaches the user) but the turn is
+            # never silent. Before any text: try the local model.
             print(f"[chat] provider error model={body.model!r} "
                   f"streamed={reply_chars}ch", flush=True)
-            yield json.dumps({"error": chat_provider_registry.MODEL_UNAVAILABLE}) + "\n"
+            if not t_first:
+                async for line in local_lane("hosted provider refused", _NO_LANE):
+                    yield line
+                return
+            yield json.dumps({"error": "Chat stream interrupted."}) + "\n"
             return
         except Exception as e:
             # Network outage / unreachable upstream. Distinguish "nothing was
@@ -2047,9 +2101,11 @@ async def chat_stream(body: ChatIn, account_id: str = Depends(account_id_for)) -
             # retry for the first and a partial-reply marker for the second.
             print(f"[chat] stream failed model={body.model!r} "
                   f"({type(e).__name__}: {e}) streamed={reply_chars}ch", flush=True)
-            yield json.dumps({
-                "error": _NOTICE_OUTAGE if not t_first else "Chat stream interrupted."
-            }) + "\n"
+            if not t_first:
+                async for line in local_lane("hosted provider unreachable", _NOTICE_OUTAGE):
+                    yield line
+                return
+            yield json.dumps({"error": "Chat stream interrupted."}) + "\n"
             return
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")

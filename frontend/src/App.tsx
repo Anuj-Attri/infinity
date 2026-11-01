@@ -602,7 +602,7 @@ function AppInner() {
         setPending({ text: hideNovaActions(buffer), model });
         if (!streamedEmitted) { streamedEmitted = true; emitAgent({ kind: "streaming" }); }
       },
-      onDone: (m, _mem, truncated) => {
+      onDone: (m, _mem, truncated, fallback) => {
         model = m;
         const t1 = performance.now();
         const { cleanText, toolCalls } = parseNovaActions(buffer);
@@ -611,6 +611,11 @@ function AppInner() {
         // never a silent mid-sentence end.
         if (truncated && visibleText) {
           visibleText += "\n\n*[Reply hit the length limit — say \"continue\" for the rest.]*";
+        }
+        // A local-model reply is labelled. The usual model was unavailable, and
+        // a smaller model must not pass for it.
+        if (fallback === "local" && visibleText) {
+          visibleText += `\n\n*[Answered by the local model (${m}) because the usual model is unavailable.]*`;
         }
         console.log(`[TIMING t1] onDone after ${((t1 - t_req)/1000).toFixed(2)}s, buffer=${buffer.length}ch, toolCalls=${toolCalls.length}`);
 

@@ -78,6 +78,25 @@ Copy `.env.example` to `.env`. Every setting is explained there. The main ones:
 | `OPENROUTER_API_KEY` | **Required.** Every model call. |
 | `DATA_DIR` | Where data is written. Point it at storage you keep. |
 | `VOYAGE_API_KEY` | Optional. Search your Vault and notes by meaning, not just exact words. |
+| `SPEND_CAP_USD` | Optional. A monthly spending limit for model calls. Past it, the hosted model stops answering. |
+| `LOCAL_MODEL_URL`, `LOCAL_MODEL` | Optional. A model on your own hardware, such as [Ollama](https://ollama.com), that answers when the hosted model can't. |
+
+### When the model is unavailable
+
+If the spending limit is reached, the OpenRouter key runs out of credit, or the
+provider can't be reached, users see a plain "Model unavailable right now"
+message. No billing details are shown.
+
+If a local model is configured, it answers instead, and each such reply is
+labelled as coming from the local model. For Ollama:
+
+```bash
+ollama pull llama3.2
+LOCAL_MODEL_URL=http://localhost:11434/v1 LOCAL_MODEL=llama3.2
+```
+
+Any server with an OpenAI-compatible chat API works, including LM Studio and
+llama.cpp.
 
 ### Put your own instance online
 
@@ -93,8 +112,8 @@ does not always report a close, so any session idle for `GUEST_IDLE_MINUTES`
 (30 by default) is deleted too, and a restart deletes any that are left.
 
 Guests cannot change keys, connectors, skills or spend settings for the
-instance. They do spend your model credit, so put a hard credit limit on your
-OpenRouter key before you share the link.
+instance. They do spend your model credit, so set `SPEND_CAP_USD` and put a
+hard credit limit on your OpenRouter key before you share the link.
 
 ## Your data
 
@@ -108,6 +127,5 @@ ends, and nothing is kept in the visitor's browser after the tab closes.
 
 ## Licence
 
-Source-available, not open source. You may view the code and run an unmodified
-copy locally for personal evaluation. Commercial use, redistribution, hosting it for others and
-derivative works need written permission. See [LICENSE](LICENSE).
+MIT. Use it, change it, ship it, sell it. Keep the copyright notice in copies.
+Copyright (c) 2026 Anuj Attri. See [LICENSE](LICENSE).

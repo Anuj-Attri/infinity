@@ -200,10 +200,31 @@ def record(
         return 0.0
 
 
+def env_cap() -> float | None:
+    """SPEND_CAP_USD: a monthly limit set by the operator's environment.
+
+    Applies when no cap has been set in the app, so a public deployment has a
+    limit from its first request instead of from whenever someone opens the
+    Usage tile. A cap set in the app wins, so the operator can still adjust it.
+    """
+    import os
+    raw = (os.environ.get("SPEND_CAP_USD") or "").strip()
+    if not raw:
+        return None
+    try:
+        v = float(raw)
+    except ValueError:
+        log.error("SPEND_CAP_USD=%r is not a number; no environment cap applied", raw)
+        return None
+    return v if v > 0 else None
+
+
 def summary() -> dict[str, Any]:
     with _LOCK:
         data = _load()
         cap = data.get("cap_usd")
+        if cap is None:
+            cap = env_cap()
         total = data.get("total_usd", 0.0)
         over = cap is not None and total >= cap
         warn = cap is not None and cap > 0 and total >= 0.8 * cap
@@ -230,11 +251,12 @@ def set_cap(usd: float | None) -> None:
 
 def get_cap() -> float | None:
     with _LOCK:
-        return _load().get("cap_usd")
+        cap = _load().get("cap_usd")
+    return cap if cap is not None else env_cap()
 
 
 def guard_ok() -> bool:
-    """False when the monthly cap is set AND exceeded — caller should drop to
-    the local CPU fallback (fail-closed). No cap set → always True."""
+    """False when the monthly cap is set AND exceeded. The caller then uses the
+    local model if one is configured, and refuses otherwise. No cap → True."""
     s = summary()
     return not s["over_cap"]

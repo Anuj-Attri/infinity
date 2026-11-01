@@ -462,7 +462,7 @@ export default function SettingsPanel({ open, onClose }: Props) {
               <div className="about-app">Infinity</div>
               <div className="about-by">by Anuj Attri</div>
               <div className="about-version">v{typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.1.1"}</div>
-              <div className="about-copyright">© 2026 Anuj Attri. All rights reserved.</div>
+              <div className="about-copyright">© 2026 Anuj Attri. MIT License.</div>
             </div>
           </section>
           </>}

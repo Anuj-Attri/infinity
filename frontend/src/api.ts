@@ -1121,7 +1121,9 @@ export type MemoryUsed = { id: string; type: string; score: number; text: string
 export type StreamCallbacks = {
   onDelta: (chunk: string) => void;
   /** `truncated` = the reply hit a length/context stop (never silent). */
-  onDone?: (model: string, memoryUsed?: MemoryUsed[], truncated?: boolean) => void;
+  /** `fallback` = "local" when the hosted model could not answer and a local
+   *  model did. The reply is labelled, never passed off as the usual model. */
+  onDone?: (model: string, memoryUsed?: MemoryUsed[], truncated?: boolean, fallback?: string) => void;
   onError?: (msg: string) => void;
   signal?: AbortSignal;
 };
@@ -1209,7 +1211,8 @@ export async function postChatStream(
           const obj = JSON.parse(line);
           if (typeof obj.delta === "string") onDelta(obj.delta);
           else if (obj.error) onError?.(String(obj.error));
-          else if (obj.done) onDone?.(String(obj.model || ""), obj.memory_used, !!obj.truncated);
+          else if (obj.done) onDone?.(String(obj.model || ""), obj.memory_used, !!obj.truncated,
+                                      typeof obj.fallback === "string" ? obj.fallback : undefined);
         } catch {
           // skip malformed line
         }
