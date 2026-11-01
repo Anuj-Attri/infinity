@@ -104,8 +104,15 @@ def main() -> None:
     space_id = os.environ.get("HF_SPACE", "").strip() or f"{user}/infinity"
     print(f"deploying to space {space_id}")
 
-    api.create_repo(space_id, repo_type="space", space_sdk="docker",
-                    exist_ok=True, private=False)
+    try:
+        api.create_repo(space_id, repo_type="space", space_sdk="docker",
+                        exist_ok=True, private=False)
+    except Exception as e:
+        # The status alone ("402 Payment Required") does not say what the
+        # account is missing; the body does. Print it before giving up.
+        resp = getattr(e, "response", None)
+        detail = getattr(resp, "text", "") if resp is not None else ""
+        die(f"could not create the Space {space_id}: {e}\nserver said: {detail[:500]}")
 
     for name in ("OPENROUTER_API_KEY", "VOYAGE_API_KEY"):
         val = os.environ.get(name, "").strip()
