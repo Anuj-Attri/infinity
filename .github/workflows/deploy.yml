@@ -1,0 +1,57 @@
+name: Deploy
+
+# Publishes the site to a Hugging Face Space after CI passes on main.
+# Setup, once: add repository secrets HF_TOKEN (write) and OPENROUTER_API_KEY.
+# Optional: secret VOYAGE_API_KEY; variables HF_SPACE ("owner/name") and
+# SPEND_CAP_USD. See scripts/deploy_hf_space.py.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  space:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+      HF_SPACE: ${{ vars.HF_SPACE }}
+      SPEND_CAP_USD: ${{ vars.SPEND_CAP_USD }}
+    steps:
+      - name: Check setup
+        id: setup
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "::warning::Not deployed: add the HF_TOKEN repository secret to enable deploys."
+            echo "### Not deployed" >> "$GITHUB_STEP_SUMMARY"
+            echo "Add the \`HF_TOKEN\` and \`OPENROUTER_API_KEY\` repository secrets." >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.setup.outputs.ready == 'true'
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        if: steps.setup.outputs.ready == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Deploy
+        if: steps.setup.outputs.ready == 'true'
+        run: |
+          pip install --quiet "huggingface_hub>=0.30"
+          python scripts/deploy_hf_space.py

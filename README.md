@@ -115,6 +115,29 @@ Guests cannot change keys, connectors, skills or spend settings for the
 instance. They do spend your model credit, so set `SPEND_CAP_USD` and put a
 hard credit limit on your OpenRouter key before you share the link.
 
+### Deploy it for free
+
+The repo deploys itself to a free [Hugging Face Space](https://huggingface.co/spaces)
+as a public guest-mode site, after every successful CI run on `main`.
+
+1. Create a Hugging Face token with **write** access at
+   <https://huggingface.co/settings/tokens>.
+2. In the GitHub repo, open **Settings, Secrets and variables, Actions** and add
+   the secrets `HF_TOKEN` and `OPENROUTER_API_KEY`.
+3. Run the **Deploy** workflow from the **Actions** tab, or push to `main`.
+
+The site appears at `https://<your-hf-username>-infinity.hf.space`. Optional
+repository variables: `HF_SPACE` to pick another Space name, `SPEND_CAP_USD` to
+change the default limit of 20. The same script runs from a terminal:
+
+```bash
+pip install huggingface_hub
+HF_TOKEN=hf_... OPENROUTER_API_KEY=sk-or-... python scripts/deploy_hf_space.py
+```
+
+A free Space sleeps after two days without visitors and wakes on the next
+visit, which takes about a minute.
+
 ## Your data
 
 Everything is stored in your instance, under `DATA_DIR`. It leaves only when
